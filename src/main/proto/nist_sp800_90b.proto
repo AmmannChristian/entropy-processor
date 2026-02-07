@@ -1,0 +1,64 @@
+// NIST SP 800-90B entropy source assessment service definition.
+//
+// Provides a gRPC interface for estimating the min-entropy of a noise source
+// according to NIST Special Publication 800-90B. Supports both IID
+// (independent and identically distributed) and non-IID assessment modes.
+syntax = "proto3";
+
+package nist.sp800_90b.v1;
+
+option java_package = "com.ammann.entropy.grpc.proto.sp80090b";
+option java_multiple_files = true;
+option java_outer_classname = "Sp80090bProto";
+
+// Service for performing NIST SP 800-90B entropy assessments.
+service Sp80090bAssessmentService {
+  // Assesses the min-entropy of the provided data sample using configured estimators.
+  rpc AssessEntropy(Sp80090bAssessmentRequest) returns (Sp80090bAssessmentResponse);
+}
+
+// Request for an entropy assessment.
+message Sp80090bAssessmentRequest {
+  // Raw sample data to assess. Each byte is treated as one symbol when bits_per_symbol is 8.
+  bytes data = 1;
+  // Number of bits per symbol. Typically 8 for byte-level analysis or 1 for bitwise analysis.
+  uint32 bits_per_symbol = 2;
+  // If true, run estimators assuming the source is IID.
+  bool iid_mode = 3;
+  // If true, run non-IID estimators (more conservative, always recommended).
+  bool non_iid_mode = 4;
+  // Verbosity level for the assessment output (0 = minimal, 1 = normal, 2 = verbose).
+  uint32 verbosity = 5;
+}
+
+// Aggregated entropy assessment response.
+message Sp80090bAssessmentResponse {
+  // Overall min-entropy estimate in bits per symbol (the most conservative estimate).
+  double min_entropy = 1;
+  // Results from IID-assumption estimators. Empty if iid_mode was false.
+  repeated Sp80090bEstimatorResult iid_results = 2;
+  // Results from non-IID estimators. Empty if non_iid_mode was false.
+  repeated Sp80090bEstimatorResult non_iid_results = 3;
+  // Whether the assessed entropy meets the minimum threshold for the intended use.
+  bool passed = 4;
+  // Human-readable summary of the assessment outcome.
+  string assessment_summary = 5;
+  // Total number of symbols in the assessed sample.
+  uint64 sample_count = 6;
+  // Bits per symbol used during assessment (echoed from the request).
+  uint32 bits_per_symbol = 7;
+}
+
+// Result from a single entropy estimator within the assessment.
+message Sp80090bEstimatorResult {
+  // Name of the estimator (e.g., "Most Common Value", "Collision", "Markov").
+  string name = 1;
+  // Estimated entropy in bits per symbol.
+  double entropy_estimate = 2;
+  // Whether this estimator considers the source acceptable.
+  bool passed = 3;
+  // Estimator-specific numeric details (e.g., intermediate statistics).
+  map<string, double> details = 4;
+  // Human-readable description of the estimator and its result.
+  string description = 5;
+}

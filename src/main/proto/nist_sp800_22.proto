@@ -1,0 +1,60 @@
+// NIST SP 800-22 Rev. 1a statistical test suite service definition.
+//
+// Provides a gRPC interface for running the full suite of 15 randomness tests
+// defined in NIST Special Publication 800-22 against a supplied bitstream.
+// The bitstream is typically derived from whitened radioactive decay intervals.
+syntax = "proto3";
+
+package nist.sp800_22.v1;
+
+option java_package = "com.ammann.entropy.grpc.proto.sp80022";
+option java_multiple_files = true;
+option java_outer_classname = "Sp80022Proto";
+
+// Service for executing the NIST SP 800-22 statistical test suite.
+service Sp80022TestService {
+  // Runs all configured tests against the provided bitstream and returns aggregated results.
+  rpc RunTestSuite(Sp80022TestRequest) returns (Sp80022TestResponse);
+}
+
+// Request to execute the NIST SP 800-22 test suite.
+message Sp80022TestRequest {
+  // Raw bitstream to test. Minimum recommended length is 1,000,000 bits.
+  bytes bitstream = 1;
+  // Optional per-test configuration overrides. Uses NIST-recommended defaults if omitted.
+  optional Sp80022TestConfig config = 2;
+}
+
+// Per-test configuration parameters for the NIST SP 800-22 suite.
+// All lengths are specified in bits. Zero or unset values use NIST-recommended defaults.
+message Sp80022TestConfig {
+  int32 block_frequency_block_length = 1;              // Block length for the Block Frequency test.
+  int32 non_overlapping_template_block_length = 2;     // Block length for the Non-Overlapping Template Matching test.
+  int32 overlapping_template_block_length = 3;         // Block length for the Overlapping Template Matching test.
+  int32 approximate_entropy_block_length = 4;          // Block length for the Approximate Entropy test.
+  int32 serial_block_length = 5;                       // Block length for the Serial test.
+  int32 linear_complexity_sequence_length = 6;         // Sequence length for the Linear Complexity test.
+}
+
+// Aggregated response from a complete NIST SP 800-22 test suite execution.
+message Sp80022TestResponse {
+  string timestamp = 1;                       // ISO-8601 timestamp of test execution.
+  int32 sample_size_bits = 2;                 // Number of bits in the tested bitstream.
+  double overall_pass_rate = 3;               // Fraction of tests that passed (0.0 to 1.0).
+  double p_value_uniformity_chi2 = 4;         // Chi-squared statistic for p-value uniformity across all tests.
+  repeated Sp80022TestResult results = 5;     // Individual result for each executed test.
+  int64 execution_time_ms = 6;                // Total execution time in milliseconds.
+  int32 tests_run = 7;                        // Number of tests that were executed.
+  int32 tests_skipped = 8;                    // Number of tests skipped (e.g., due to insufficient data).
+  int32 tests_total = 9;                      // Total number of tests in the suite (typically 15).
+  bool nist_compliant = 10;                   // Whether the overall result meets NIST compliance criteria.
+}
+
+// Result of a single NIST SP 800-22 statistical test.
+message Sp80022TestResult {
+  string name = 1;                // Canonical name of the test (e.g., "Frequency (Monobit) Test").
+  double p_value = 2;             // Computed p-value in the range [0.0, 1.0]. Values >= 0.01 indicate a pass.
+  bool passed = 3;                // Whether the test passed (p-value >= significance level).
+  optional double proportion = 4; // Pass proportion when the test is run on multiple sub-sequences.
+  optional string warning = 5;    // Advisory message if the test produced marginal or unusual results.
+}
