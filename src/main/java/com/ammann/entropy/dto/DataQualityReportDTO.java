@@ -11,7 +11,7 @@ import java.util.List;
  * for a window of entropy events.
  *
  * <p>Includes metrics for sequence gap detection (packet loss), clock drift
- * between the Raspberry Pi and the server, decay rate plausibility, network
+ * between edge gateway ingestion time and server reception time, decay rate plausibility, network
  * delay, and an overall composite quality score in the range [0.0, 1.0].
  */
 @Schema(description = "Data quality assessment report for entropy event streams")
@@ -32,7 +32,7 @@ public record DataQualityReportDTO(
         @Schema(description = "Deprecated: Always empty. Use sequenceGaps for gap information.", deprecated = true)
         List<Long> missingSequences,
 
-        @Schema(description = "Clock drift analysis between Raspi and server")
+        @Schema(description = "Clock drift analysis between edge ingestion time and server reception time")
         ClockDriftInfoDTO clockDrift,
 
         @Schema(description = "Entropy decay rate plausibility check")

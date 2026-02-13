@@ -30,7 +30,7 @@ public class EntropyData extends PanacheEntity
     public String batchId;
 
     /**
-     * Human-readable ISO 8601 timestamp from Raspberry Pi.
+     * Human-readable ISO 8601 timestamp derived from edge gateway ingestion time.
      * Used for debugging and compatibility with external systems.
      */
     @Column(nullable = false, length = 64)
@@ -63,7 +63,7 @@ public class EntropyData extends PanacheEntity
     public Integer channel;
 
     /**
-     * Raspberry Pi timestamp in microseconds.
+     * Edge gateway ingestion timestamp in microseconds.
      */
     @Column(name = "rpi_timestamp_us")
     public Long rpiTimestampUs;
@@ -89,8 +89,8 @@ public class EntropyData extends PanacheEntity
     public Instant serverReceived;
 
     /**
-     * Network delay in milliseconds between hardware event and server reception.
-     * Calculated as: server_received - hw_timestamp_ns
+     * Delay in milliseconds between edge gateway ingestion and cloud server reception.
+     * Calculated as: server_received_us - rpi_timestamp_us.
      * Used for network performance analysis.
      */
     @Column(name = "network_delay_ms")

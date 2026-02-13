@@ -104,7 +104,7 @@ message EntropyBatch {
 
 // A single time-to-digital converter (TDC) event representing one detected radioactive decay.
 message TDCEvent {
-  uint64 rpi_timestamp_us = 1;  // Raspberry Pi system clock at capture time, in microseconds since Unix epoch.
+  uint64 rpi_timestamp_us = 1;  // Gateway ingestion timestamp in microseconds since Unix epoch (assigned when MQTT event is received at edge).
   uint64 tdc_timestamp_ps = 2;  // TDC hardware timestamp in picoseconds (sub-nanosecond resolution).
   uint32 channel = 3;           // TDC input channel (typically 0 for single-channel setups).
   optional int64 delta_ps = 4;  // Time delta to the previous event in picoseconds, if computed at the edge.

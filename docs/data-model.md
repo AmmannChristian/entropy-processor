@@ -106,15 +106,15 @@ The primary data table storing individual radioactive decay events captured by T
 |---|---|---|---|
 | `id` | `BIGINT` | No | Auto-generated surrogate key (sequence increment: 50) |
 | `batch_id` | `VARCHAR(64)` | Yes | Gateway-assigned batch identifier linking events to their source batch |
-| `timestamp` | `VARCHAR(64)` | No | ISO-8601 string derived from the Raspberry Pi microsecond timestamp |
+| `timestamp` | `VARCHAR(64)` | No | ISO-8601 string derived from the gateway ingestion microsecond timestamp (`rpi_timestamp_us`) |
 | `hw_timestamp_ns` | `BIGINT` | No | TDC hardware timestamp converted from picoseconds to nanoseconds; primary field for entropy interval calculations |
-| `rpi_timestamp_us` | `BIGINT` | Yes | Raspberry Pi wall-clock timestamp in microseconds since Unix epoch |
+| `rpi_timestamp_us` | `BIGINT` | Yes | Gateway ingestion timestamp in microseconds since Unix epoch (set when MQTT event is received at edge gateway) |
 | `tdc_timestamp_ps` | `BIGINT` | Yes | Raw TDC timestamp in picoseconds (original hardware precision) |
 | `channel` | `INTEGER` | Yes | TDC input channel that detected the decay event |
 | `whitened_entropy` | `BYTEA` | Yes | 8-byte XOR-folded byte array derived from TDC and RPI timestamps |
 | `sequence` | `BIGINT` | No | Monotonically increasing sequence number for gap detection |
 | `server_received` | `TIMESTAMPTZ` | No | Server-side reception timestamp; serves as the TimescaleDB partition key |
-| `network_delay_ms` | `BIGINT` | Yes | Estimated one-way network delay in milliseconds |
+| `network_delay_ms` | `BIGINT` | Yes | Estimated delay between edge gateway ingestion and cloud server reception, in milliseconds |
 | `created_at` | `TIMESTAMPTZ` | No | Row insertion timestamp |
 | `source_address` | `VARCHAR(45)` | Yes | IP address of the edge gateway (IPv6-compatible length) |
 | `quality_score` | `DOUBLE PRECISION` | Yes | Per-event quality score in the range [0.0, 1.0]; default 1.0 |

@@ -67,16 +67,16 @@ public class DataQualityReport extends PanacheEntity {
 
     /**
      * Clock drift rate in microseconds per hour.
-     * Positive values: Raspi clock runs fast
-     * Negative values: Raspi clock runs slow
+     * Positive values: edge ingestion clock appears fast vs. cloud reception
+     * Negative values: edge ingestion clock appears slow vs. cloud reception
      * Threshold for concern: absolute drift greater than 10 us/h
      */
     @Column(name = "clock_drift_us_per_hour")
     public Double clockDriftUsPerHour;
 
     /**
-     * Average network delay in milliseconds.
-     * Calculated as: (server_received - rpi_timestamp_us) / 1000
+     * Average delay between edge gateway ingestion and cloud server reception, in milliseconds.
+     * Calculated as: (server_received_us - rpi_timestamp_us) / 1000
      */
     @Column(name = "average_network_delay_ms")
     public Double averageNetworkDelayMs;

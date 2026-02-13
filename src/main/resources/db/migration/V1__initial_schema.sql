@@ -27,15 +27,15 @@ CREATE SEQUENCE IF NOT EXISTS entropy_data_SEQ START WITH 1 INCREMENT BY 50;
 CREATE TABLE IF NOT EXISTS entropy_data (
     id                BIGINT        NOT NULL DEFAULT nextval('entropy_data_SEQ'),
     batch_id          VARCHAR(64),                     -- Gateway-assigned batch identifier.
-    timestamp         VARCHAR(64)   NOT NULL,           -- ISO-8601 string derived from rpi_timestamp_us.
+    timestamp         VARCHAR(64)   NOT NULL,           -- ISO-8601 string derived from rpi_timestamp_us (gateway ingestion time).
     hw_timestamp_ns   BIGINT        NOT NULL,           -- TDC hardware timestamp in nanoseconds (converted from picoseconds).
-    rpi_timestamp_us  BIGINT,                           -- Raspberry Pi wall-clock timestamp in microseconds since epoch.
+    rpi_timestamp_us  BIGINT,                           -- Gateway ingestion timestamp in microseconds since epoch.
     tdc_timestamp_ps  BIGINT,                           -- Raw TDC timestamp in picoseconds (original precision).
     channel           INTEGER,                          -- TDC input channel that detected the decay event.
     whitened_entropy  BYTEA,                            -- XOR-folded byte array derived from TDC and RPI timestamps.
     sequence          BIGINT        NOT NULL,           -- Monotonically increasing sequence number (gap detection).
     server_received   TIMESTAMPTZ   NOT NULL DEFAULT NOW(), -- Server-side reception timestamp (hypertable partition key).
-    network_delay_ms  BIGINT,                           -- Estimated one-way network delay in milliseconds.
+    network_delay_ms  BIGINT,                           -- Estimated delay from edge gateway ingestion to cloud server reception, in milliseconds.
     created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(), -- Row insertion timestamp.
     source_address    VARCHAR(45)   DEFAULT NULL,       -- IP address of the edge gateway that sent this event.
     quality_score     DOUBLE PRECISION DEFAULT 1.0,     -- Per-event quality score in [0.0, 1.0].

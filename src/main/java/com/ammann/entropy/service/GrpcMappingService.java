@@ -43,7 +43,7 @@ public class GrpcMappingService
         entity.tdcTimestampPs = proto.getTdcTimestampPs();
         entity.whitenedEntropy = deriveWhitenedEntropy(proto);
 
-        // Convert RPI timestamp (microseconds) to ISO-8601 string
+        // Convert gateway ingestion timestamp (microseconds) to ISO-8601 string
         if (proto.getRpiTimestampUs() > 0) {
             entity.timestamp = Instant.ofEpochMilli(proto.getRpiTimestampUs() / 1000).toString();
         } else {
@@ -58,7 +58,7 @@ public class GrpcMappingService
         entity.createdAt = Instant.now();
         entity.qualityScore = 1.0; // Default, updated later by DataQualityService
 
-        // Calculate network delay: server time - rpi time (in milliseconds)
+        // Calculate ingestion-to-server delay: cloud server reception minus edge gateway ingestion (ms)
         long rpiTimestampUs = proto.getRpiTimestampUs();
         long serverTimestampUs = serverReceived.toEpochMilli() * 1000;
         entity.networkDelayMs = rpiTimestampUs > 0

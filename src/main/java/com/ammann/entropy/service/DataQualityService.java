@@ -17,7 +17,7 @@ import java.util.List;
  * Service for assessing the quality of entropy event streams.
  *
  * <p>Evaluates multiple quality dimensions including sequence gap detection (packet loss),
- * clock drift analysis between the Raspberry Pi and the server, decay rate plausibility
+ * drift analysis between edge gateway ingestion time and server reception time, decay rate plausibility
  * for the entropy source, and network delay stability. Produces a composite quality score
  * in the range [0.0, 1.0].
  *
@@ -229,7 +229,7 @@ public class DataQualityService {
     }
 
     /**
-     * Analyzes clock drift between Raspberry Pi and server.
+     * Analyzes drift between edge gateway ingestion timestamps and server reception time.
      *
      * @param events List of EntropyData events
      * @return ClockDriftInfo with drift rate and recommendations
