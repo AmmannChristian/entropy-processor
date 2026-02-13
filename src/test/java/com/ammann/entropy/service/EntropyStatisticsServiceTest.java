@@ -69,6 +69,22 @@ class EntropyStatisticsServiceTest
     }
 
     @Test
+    void comprehensiveEntropyWithFineBucketsAvoidsHistogramCollapse()
+    {
+        List<Long> intervals = LongStream.range(0, 500)
+                .map(i -> 2_700L + (i % 6) * 1_000L)
+                .boxed()
+                .toList();
+
+        EntropyAnalysisResult coarse = service.calculateAllEntropies(intervals, 1_000_000);
+        EntropyAnalysisResult fine = service.calculateAllEntropies(intervals, 1_000);
+
+        assertThat(coarse.shannonEntropy()).isCloseTo(0.0, within(0.0001));
+        assertThat(fine.shannonEntropy()).isGreaterThan(0.1);
+        assertThat(fine.renyiEntropy()).isGreaterThan(0.1);
+    }
+
+    @Test
     void sampleAndApproxEntropyIncreaseWithVariability()
     {
         List<Long> constantIntervals = LongStream.generate(() -> 1_000L)
@@ -99,6 +115,12 @@ class EntropyStatisticsServiceTest
         assertThatThrownBy(() -> service.calculateSampleEntropy(List.of(-1L, 0L, 2L), 2, 0.2))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.calculateApproximateEntropy(List.of(-5L, 2L, 3L), 2, 0.2))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.calculateShannonEntropy(List.of(1L, 2L, 3L), 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.calculateRenyiEntropy(List.of(1L, 2L, 3L), 2.0, -1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.calculateAllEntropies(List.of(1L, 2L, 3L), 0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

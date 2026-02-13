@@ -6,6 +6,7 @@ import com.ammann.entropy.exception.ValidationException;
 import com.ammann.entropy.model.EntropyData;
 import com.ammann.entropy.properties.ApiProperties;
 import com.ammann.entropy.service.DataQualityService;
+import com.ammann.entropy.service.EntropyStatisticsService;
 import jakarta.annotation.security.PermitAll;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
@@ -27,6 +28,7 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * REST resource for querying and analyzing entropy event data.
@@ -51,6 +53,9 @@ public class EventsResource {
 
     @Inject
     DataQualityService dataQualityService;
+
+    @Inject
+    EntropyStatisticsService entropyStatisticsService;
 
     @ConfigProperty(name = "entropy.source.expected-rate-hz", defaultValue = "184.0")
     double expectedRateHz;
@@ -310,6 +315,52 @@ public class EventsResource {
 
         LOG.infof("Event rate: %.2f Hz (expected: %.2f Hz, deviation: %.2f%%)",
                 response.averageRateHz(), response.expectedRateHz(), response.deviationPercent());
+        return Response.ok(response).build();
+    }
+
+    @GET
+    @Path(ApiProperties.Events.INTERVAL_HISTOGRAM)
+    @Operation(
+            summary = "Get Interval Histogram",
+            description = "Returns a histogram of frequencies for intervals between decay events. " +
+                    "Requires at least 100 intervals for meaningful statistical analysis. " +
+                    "Default bucket size (100ns) is optimized for radioactive decay intervals in the 2-10µs range."
+    )
+    @APIResponses({
+            @APIResponse(responseCode = "200", description = "Histogram computed successfully",
+                    content = @Content(schema = @Schema(implementation = IntervalHistogramDTO.class))),
+            @APIResponse(responseCode = "400", description = "Invalid parameters or insufficient data"),
+            @APIResponse(responseCode = "500", description = "Internal server error")
+    })
+    public Response getIntervalHistogram(
+            @Parameter(description = "Start of time window (ISO-8601)")
+            @QueryParam("from") String from,
+            @Parameter(description = "End of time window (ISO-8601)")
+            @QueryParam("to") String to,
+            @Parameter(description = "Bucket size in nanoseconds (must be positive, default: 100)")
+            @QueryParam("bucketSizeNs") @DefaultValue("100") int bucketSizeNs) {
+
+        LOG.debugf("Interval histogram request: from=%s, to=%s, bucketSize=%d", from, to, bucketSizeNs);
+
+        // Validate bucket size to prevent division by zero and negative values
+        if (bucketSizeNs <= 0) {
+            throw ValidationException.invalidParameter("bucketSizeNs", bucketSizeNs, "positive integer");
+        }
+
+        TimeWindow window = parseTimeWindow(from, to);
+        List<Long> intervals = EntropyData.calculateIntervals(window.start, window.end);
+
+        if (intervals.size() < 100) {
+            throw ValidationException.insufficientData("intervals", 100, intervals.size());
+        }
+
+        Map<Long, Integer> histogram = entropyStatisticsService.createHistogram(intervals, bucketSizeNs);
+        IntervalHistogramDTO response = IntervalHistogramDTO.from(
+            histogram, intervals, bucketSizeNs, window.start, window.end
+        );
+
+        LOG.infof("Histogram: %d buckets from %d intervals (min=%dns, max=%dns)",
+                histogram.size(), intervals.size(), response.minIntervalNs(), response.maxIntervalNs());
         return Response.ok(response).build();
     }
 

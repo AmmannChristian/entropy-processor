@@ -7,11 +7,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.ammann.entropy.dto.DataQualityReportDTO;
 import com.ammann.entropy.dto.EventCountResponseDTO;
 import com.ammann.entropy.dto.EventRateResponseDTO;
+import com.ammann.entropy.dto.IntervalHistogramDTO;
 import com.ammann.entropy.dto.IntervalStatisticsDTO;
 import com.ammann.entropy.dto.RecentEventsResponseDTO;
 import com.ammann.entropy.exception.ValidationException;
 import com.ammann.entropy.model.EntropyData;
 import com.ammann.entropy.service.DataQualityService;
+import com.ammann.entropy.service.EntropyStatisticsService;
 import com.ammann.entropy.support.TestDataFactory;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
@@ -237,9 +239,137 @@ class EventsResourceTest {
                 .isInstanceOf(ValidationException.class);
     }
 
+    @Test
+    @TestTransaction
+    void getIntervalHistogramWithSufficientData() {
+        EntropyData.deleteAll();
+        EventsResource resource = buildResource();
+
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+        // Create 150 events with 1000ns intervals to ensure > 100 intervals
+        List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
+        EntropyData.persist(events);
+
+        var response = resource.getIntervalHistogram(start.toString(), start.plusSeconds(10).toString(), 100);
+        IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
+
+        assertThat(dto.totalIntervals()).isEqualTo(149L); // 150 events = 149 intervals
+        assertThat(dto.buckets()).isNotEmpty();
+        assertThat(dto.bucketSizeNs()).isEqualTo(100);
+        assertThat(dto.minIntervalNs()).isGreaterThan(0L);
+        assertThat(dto.maxIntervalNs()).isGreaterThan(0L);
+    }
+
+    @Test
+    @TestTransaction
+    void getIntervalHistogramRejectsInsufficientData() {
+        EntropyData.deleteAll();
+        EventsResource resource = buildResource();
+
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+        // Create only 50 events (49 intervals) - below the 100 minimum
+        List<EntropyData> events = TestDataFactory.buildSequentialEvents(50, 1_000L, start);
+        EntropyData.persist(events);
+
+        assertThatThrownBy(
+                        () ->
+                                resource.getIntervalHistogram(
+                                        start.toString(), start.plusSeconds(10).toString(), 100))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("100");
+    }
+
+    @Test
+    @TestTransaction
+    void getIntervalHistogramHandlesEmptyWindow() {
+        EntropyData.deleteAll();
+        EventsResource resource = buildResource();
+
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+        // No events in this window
+
+        assertThatThrownBy(
+                        () ->
+                                resource.getIntervalHistogram(
+                                        start.toString(), start.plusSeconds(10).toString(), 100))
+                .isInstanceOf(ValidationException.class);
+    }
+
+    @Test
+    @TestTransaction
+    void getIntervalHistogramUsesDefaultBucketSize() {
+        EntropyData.deleteAll();
+        EventsResource resource = buildResource();
+
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+        List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
+        EntropyData.persist(events);
+
+        var response = resource.getIntervalHistogram(start.toString(), start.plusSeconds(10).toString(), 100);
+        IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
+
+        // Verify default bucket size is used when not specified
+        assertThat(dto.bucketSizeNs()).isEqualTo(100);
+    }
+
+    @Test
+    @TestTransaction
+    void getIntervalHistogramCustomBucketSize() {
+        EntropyData.deleteAll();
+        EventsResource resource = buildResource();
+
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+        List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
+        EntropyData.persist(events);
+
+        var response = resource.getIntervalHistogram(start.toString(), start.plusSeconds(10).toString(), 500);
+        IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
+
+        assertThat(dto.bucketSizeNs()).isEqualTo(500);
+    }
+
+    @Test
+    void getIntervalHistogramRejectsInvalidBucketSize() {
+        EventsResource resource = buildResource();
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+
+        // Test zero bucket size
+        assertThatThrownBy(
+                        () ->
+                                resource.getIntervalHistogram(
+                                        start.toString(), start.plusSeconds(10).toString(), 0))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("bucketSizeNs");
+
+        // Test negative bucket size
+        assertThatThrownBy(
+                        () ->
+                                resource.getIntervalHistogram(
+                                        start.toString(), start.plusSeconds(10).toString(), -100))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("bucketSizeNs");
+    }
+
+    @Test
+    void getIntervalHistogramValidatesTimeWindow() {
+        EventsResource resource = buildResource();
+
+        // Test invalid time window (end before start)
+        assertThatThrownBy(
+                        () ->
+                                resource.getIntervalHistogram(
+                                        "2024-01-02T00:00:00Z", "2024-01-01T00:00:00Z", 100))
+                .isInstanceOf(ValidationException.class);
+
+        // Test malformed timestamp
+        assertThatThrownBy(() -> resource.getIntervalHistogram("bad", "2024-01-01T00:00:00Z", 100))
+                .isInstanceOf(ValidationException.class);
+    }
+
     private EventsResource buildResource() {
         EventsResource resource = new EventsResource();
         resource.dataQualityService = new DataQualityService();
+        resource.entropyStatisticsService = new EntropyStatisticsService();
         resource.expectedRateHz = 184.0;
         return resource;
     }

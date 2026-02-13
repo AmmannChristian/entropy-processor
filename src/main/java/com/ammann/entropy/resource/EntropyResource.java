@@ -71,8 +71,8 @@ public class EntropyResource {
             @QueryParam("from") String from,
             @Parameter(description = "End of time window (ISO-8601)")
             @QueryParam("to") String to,
-            @Parameter(description = "Histogram bucket size in nanoseconds (default: 1000000 = 1ms)")
-            @QueryParam("bucketSize") @DefaultValue("1000000") int bucketSize) {
+            @Parameter(description = "Histogram bucket size in nanoseconds (default: 1000 = 1us)")
+            @QueryParam("bucketSize") @DefaultValue("1000") int bucketSize) {
 
         LOG.debugf("Shannon entropy request: from=%s, to=%s, bucketSize=%d", from, to, bucketSize);
 
@@ -112,8 +112,8 @@ public class EntropyResource {
             @QueryParam("to") String to,
             @Parameter(description = "Renyi parameter alpha (must be positive, alpha near 1 approximates Shannon)")
             @QueryParam("alpha") @DefaultValue("2.0") double alpha,
-            @Parameter(description = "Histogram bucket size in nanoseconds (default: 1000000 = 1ms)")
-            @QueryParam("bucketSize") @DefaultValue("1000000") int bucketSize) {
+            @Parameter(description = "Histogram bucket size in nanoseconds (default: 1000 = 1us)")
+            @QueryParam("bucketSize") @DefaultValue("1000") int bucketSize) {
 
         LOG.debugf("Renyi entropy request: from=%s, to=%s, alpha=%.2f, bucketSize=%d", from, to, alpha, bucketSize);
 
@@ -143,7 +143,7 @@ public class EntropyResource {
     @Path(ApiProperties.Entropy.COMPREHENSIVE)
     @Operation(
             summary = "Comprehensive Entropy Analysis",
-            description = "Calculates all entropy measures: Shannon, Renyi (alpha=2), Sample Entropy, and Approximate Entropy"
+            description = "Calculates all entropy measures: Shannon, Renyi (alpha=2), Sample Entropy, and Approximate Entropy. Supports configurable histogram bucket size for Shannon and Renyi."
     )
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Comprehensive entropy analysis completed",
@@ -155,14 +155,16 @@ public class EntropyResource {
             @Parameter(description = "Start of time window (ISO-8601)")
             @QueryParam("from") String from,
             @Parameter(description = "End of time window (ISO-8601)")
-            @QueryParam("to") String to) {
+            @QueryParam("to") String to,
+            @Parameter(description = "Histogram bucket size in nanoseconds for Shannon/Renyi (default: 1000 = 1us)")
+            @QueryParam("bucketSize") @DefaultValue("1000") int bucketSize) {
 
-        LOG.debugf("Comprehensive entropy request: from=%s, to=%s", from, to);
+        LOG.debugf("Comprehensive entropy request: from=%s, to=%s, bucketSize=%d", from, to, bucketSize);
 
         TimeWindow window = parseTimeWindow(from, to);
         List<Long> intervals = getIntervalsForWindow(window.start, window.end);
 
-        var result = entropyStatisticsService.calculateAllEntropies(intervals);
+        var result = entropyStatisticsService.calculateAllEntropies(intervals, bucketSize);
         var dto = EntropyStatisticsDTO.from(result, window.start, window.end);
 
         LOG.infof("Comprehensive entropy analysis completed in %.2fms for %d intervals",
@@ -186,18 +188,20 @@ public class EntropyResource {
             @Parameter(description = "Start of time window (ISO-8601)", required = true)
             @QueryParam("from") String from,
             @Parameter(description = "End of time window (ISO-8601)", required = true)
-            @QueryParam("to") String to) {
+            @QueryParam("to") String to,
+            @Parameter(description = "Histogram bucket size in nanoseconds for Shannon/Renyi (default: 1000 = 1us)")
+            @QueryParam("bucketSize") @DefaultValue("1000") int bucketSize) {
 
         if (from == null || to == null) {
             throw ValidationException.invalidParameter("from/to", "null", "ISO-8601 timestamps");
         }
 
-        LOG.debugf("Time window analysis request: from=%s, to=%s", from, to);
+        LOG.debugf("Time window analysis request: from=%s, to=%s, bucketSize=%d", from, to, bucketSize);
 
         TimeWindow window = parseTimeWindow(from, to);
         List<Long> intervals = getIntervalsForWindow(window.start, window.end);
 
-        var result = entropyStatisticsService.calculateAllEntropies(intervals);
+        var result = entropyStatisticsService.calculateAllEntropies(intervals, bucketSize);
         var dto = EntropyStatisticsDTO.from(result, window.start, window.end);
 
         LOG.infof("Window analysis completed: %d intervals from %s to %s",

@@ -41,7 +41,7 @@ Calculates Shannon entropy from radioactive decay intervals using a histogram-ba
 |---|---|---|---|
 | `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
 | `to` | Query (string) | Now | End of time window (ISO-8601) |
-| `bucketSize` | Query (int) | 1000000 | Histogram bucket size in nanoseconds (1000000 = 1ms) |
+| `bucketSize` | Query (int) | 1000 | Histogram bucket size in nanoseconds (1000 = 1µs) |
 
 **Response** (200): `ShannonEntropyResponseDTO`
 
@@ -61,8 +61,8 @@ Calculates Renyi entropy with a configurable alpha parameter. When alpha approac
 |---|---|---|---|
 | `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
 | `to` | Query (string) | Now | End of time window (ISO-8601) |
+| `bucketSize` | Query (int) | 1000 | Histogram bucket size in nanoseconds (1000 = 1µs) |
 | `alpha` | Query (double) | 2.0 | Renyi parameter (must be positive) |
-| `bucketSize` | Query (int) | 1000000 | Histogram bucket size in nanoseconds (1000000 = 1ms) |
 
 **Response** (200): `RenyiEntropyResponseDTO`
 
@@ -83,6 +83,7 @@ Calculates all four entropy measures: Shannon, Renyi (alpha=2), Sample Entropy, 
 |---|---|---|---|
 | `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
 | `to` | Query (string) | Now | End of time window (ISO-8601) |
+| `bucketSize` | Query (int) | 1000 | Histogram bucket size in nanoseconds for Shannon/Renyi (1000 = 1us) |
 
 **Response** (200): `EntropyStatisticsDTO`
 
@@ -106,6 +107,7 @@ Performs a time-window analysis with all available entropy metrics. Functionally
 |---|---|---|---|
 | `from` | Query (string) | Yes | Start of time window (ISO-8601) |
 | `to` | Query (string) | Yes | End of time window (ISO-8601) |
+| `bucketSize` | Query (int) | No | Histogram bucket size in nanoseconds for Shannon/Renyi (default: 1000 = 1us) |
 
 **Response** (200): `EntropyStatisticsDTO` (same schema as comprehensive endpoint)
 
@@ -210,6 +212,30 @@ Returns the event rate in Hz with comparison to the expected entropy decay rate 
 | `to` | Query (string) | Now | End of time window (ISO-8601) |
 
 **Response** (200): `EventRateResponseDTO`
+
+#### GET /api/v1/events/interval-histogram
+
+Returns a histogram of inter-event interval frequencies. Requires at least 100 intervals for statistical validity. Optimized for radioactive decay intervals in the 2-10µs range.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
+| `to` | Query (string) | Now | End of time window (ISO-8601) |
+| `bucketSizeNs` | Query (int) | 100 | Histogram bucket size in nanoseconds (must be positive, 100 = 0.1µs) |
+
+**Response** (200): `IntervalHistogramDTO`
+
+| Field | Type | Description |
+|---|---|---|
+| `buckets` | List | List of histogram buckets with frequencies |
+| `totalIntervals` | Long | Total number of intervals analyzed |
+| `bucketSizeNs` | Integer | Bucket size in nanoseconds |
+| `windowStart` | Instant | Start of time window |
+| `windowEnd` | Instant | End of time window |
+| `minIntervalNs` | Long | Minimum interval in dataset (ns) |
+| `maxIntervalNs` | Long | Maximum interval in dataset (ns) |
+
+**Response** (400): `ErrorResponseDTO` - Invalid parameters or insufficient data (< 100 intervals)
 
 ### Error Responses
 

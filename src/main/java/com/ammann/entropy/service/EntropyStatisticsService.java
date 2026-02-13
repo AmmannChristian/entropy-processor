@@ -29,7 +29,7 @@ public class EntropyStatisticsService
 
     // Configuration constants for optimal performance
     private static final int MIN_SAMPLES_FOR_RELIABLE_ENTROPY = 100;
-    private static final int DEFAULT_BUCKET_SIZE_NS = 1_000_000; // 1ms buckets in nanoseconds
+    private static final int DEFAULT_BUCKET_SIZE_NS = 1_000; // 1us buckets in nanoseconds
     private static final double LOG_2 = Math.log(2.0);
 
     // Maximum samples for O(n²) algorithms (Sample Entropy, Approximate Entropy)
@@ -49,6 +49,7 @@ public class EntropyStatisticsService
     public double calculateShannonEntropy(List<Long> intervalsNs, int bucketSizeNs)
     {
         validateInput(intervalsNs, "Shannon entropy");
+        validateBucketSize(bucketSizeNs);
 
         Map<Long, Integer> histogram = createHistogram(intervalsNs, bucketSizeNs);
         double totalCount = intervalsNs.size();
@@ -68,7 +69,7 @@ public class EntropyStatisticsService
     }
 
     /**
-     * Convenience method with default bucket size (1 ms).
+     * Convenience method with default bucket size (1 us).
      */
     public double calculateShannonEntropy(List<Long> intervalsNs)
     {
@@ -92,6 +93,7 @@ public class EntropyStatisticsService
     public double calculateRenyiEntropy(List<Long> intervalsNs, double alpha, int bucketSizeNs)
     {
         validateInput(intervalsNs, "Rényi entropy");
+        validateBucketSize(bucketSizeNs);
 
         if (Math.abs(alpha - 1.0) < 1e-10) {
             LOG.debug("Renyi parameter alpha is approximately 1, using Shannon entropy limit");
@@ -118,7 +120,7 @@ public class EntropyStatisticsService
     }
 
     /**
-     * Convenience method with default bucket size (1 ms).
+     * Convenience method with default bucket size (1 us).
      */
     public double calculateRenyiEntropy(List<Long> intervalsNs, double alpha)
     {
@@ -263,13 +265,27 @@ public class EntropyStatisticsService
      */
     public EntropyAnalysisResult calculateAllEntropies(List<Long> intervalsNs)
     {
+        return calculateAllEntropies(intervalsNs, DEFAULT_BUCKET_SIZE_NS);
+    }
+
+    /**
+     * Comprehensive entropy analysis with configurable histogram bucket size for
+     * Shannon and Rényi entropy.
+     *
+     * @param intervalsNs Time intervals in nanoseconds
+     * @param bucketSizeNs histogram bucket size in nanoseconds
+     * @return Complete entropy analysis result
+     */
+    public EntropyAnalysisResult calculateAllEntropies(List<Long> intervalsNs, int bucketSizeNs)
+    {
         validateInput(intervalsNs, "Comprehensive entropy analysis");
+        validateBucketSize(bucketSizeNs);
 
         long startTime = System.nanoTime();
 
         // Calculate all entropy measures
-        double shannon = calculateShannonEntropy(intervalsNs);
-        double renyi = calculateRenyiEntropy(intervalsNs, 2.0);
+        double shannon = calculateShannonEntropy(intervalsNs, bucketSizeNs);
+        double renyi = calculateRenyiEntropy(intervalsNs, 2.0, bucketSizeNs);
         double sampleEntropy = calculateSampleEntropy(intervalsNs);
         double approximateEntropy = calculateApproximateEntropy(intervalsNs);
 
@@ -317,8 +333,18 @@ public class EntropyStatisticsService
         }
     }
 
-    /** Bins interval values into a frequency histogram with the given bucket size. */
-    private Map<Long, Integer> createHistogram(List<Long> data, long bucketSize)
+    /**
+     * Bins interval values into a frequency histogram with the given bucket size.
+     *
+     * <p>This method is public to support external histogram generation endpoints
+     * (e.g., {@code /api/v1/events/interval-histogram}) that need to create histograms
+     * from raw interval data without computing full entropy statistics.
+     *
+     * @param data the list of interval values in nanoseconds
+     * @param bucketSize the histogram bucket size in nanoseconds
+     * @return a map from bucket start values to frequency counts
+     */
+    public Map<Long, Integer> createHistogram(List<Long> data, long bucketSize)
     {
         Map<Long, Integer> histogram = new HashMap<>();
 
@@ -328,6 +354,13 @@ public class EntropyStatisticsService
         }
 
         return histogram;
+    }
+
+    private void validateBucketSize(int bucketSizeNs)
+    {
+        if (bucketSizeNs <= 0) {
+            throw new IllegalArgumentException("Histogram bucket size must be positive");
+        }
     }
 
     /** Normalizes raw interval values to the [0, 1] range via min-max scaling. */

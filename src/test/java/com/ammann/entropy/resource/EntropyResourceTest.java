@@ -90,7 +90,7 @@ class EntropyResourceTest {
         resource.entropyStatisticsService =
                 new EntropyStatisticsService() {
                     @Override
-                    public EntropyAnalysisResult calculateAllEntropies(List<Long> intervalsNs) {
+                    public EntropyAnalysisResult calculateAllEntropies(List<Long> intervalsNs, int bucketSizeNs) {
                         var stats =
                                 new BasicStatistics(
                                         intervalsNs.size(),
@@ -122,7 +122,7 @@ class EntropyResourceTest {
                 TestDataFactory.createEntropyEvent(1, 1_000_000L, start.plusMillis(10)),
                 TestDataFactory.createEntropyEvent(2, 2_000_000L, start.plusMillis(20)));
 
-        var response = resource.getComprehensiveEntropy(start.toString(), end.toString());
+        var response = resource.getComprehensiveEntropy(start.toString(), end.toString(), 1_000);
         EntropyStatisticsDTO dto = (EntropyStatisticsDTO) response.getEntity();
 
         assertThat(dto.sampleCount()).isEqualTo(1L);
@@ -133,7 +133,7 @@ class EntropyResourceTest {
     void getWindowAnalysisRejectsMissingFromTo() {
         EntropyResource resource = buildResource();
 
-        assertThatThrownBy(() -> resource.getWindowAnalysis(null, null))
+        assertThatThrownBy(() -> resource.getWindowAnalysis(null, null, 1_000))
                 .isInstanceOf(ValidationException.class);
     }
 
