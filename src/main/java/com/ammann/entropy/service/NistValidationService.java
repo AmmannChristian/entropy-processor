@@ -35,9 +35,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
 
 /**
  * Service for running NIST SP 800-22 and SP 800-90B validation against entropy data.
@@ -701,42 +706,94 @@ public class NistValidationService
             return null;
         }
 
-        NistTestResult firstTest = tests.getFirst();
-        List<NISTTestResultDTO> testDTOs = tests.stream()
-                .map(NistTestResult::toDTO)
+        // Group test results by test name and aggregate across chunks
+        Map<String, List<NistTestResult>> testsByName = tests.stream()
+                .collect(Collectors.groupingBy(t -> t.testName));
+
+        List<NISTTestResultDTO> testDTOs = testsByName.entrySet().stream()
+                .map(entry -> {
+                    String testName = entry.getKey();
+                    List<NistTestResult> chunks = entry.getValue();
+
+                    // Aggregate: FAIL if any chunk fails
+                    boolean overallPassed = chunks.stream().allMatch(t -> Boolean.TRUE.equals(t.passed));
+
+                    // Take minimum p-value (most conservative)
+                    double minPValue = chunks.stream()
+                            .mapToDouble(t -> t.pValue != null ? t.pValue : 0.0)
+                            .min()
+                            .orElse(0.0);
+
+                    // Use latest execution time
+                    Instant latestExecutedAt = chunks.stream()
+                            .map(t -> t.executedAt)
+                            .max(Instant::compareTo)
+                            .orElse(Instant.now());
+
+                    // Determine status
+                    String status = overallPassed ? "PASS" : "FAIL";
+
+                    // Take details from first chunk (or aggregate if needed)
+                    String details = chunks.get(0).details;
+
+                    return new NISTTestResultDTO(
+                            testName,
+                            overallPassed,
+                            minPValue,
+                            status,
+                            latestExecutedAt,
+                            details
+                    );
+                })
+                .sorted(Comparator.comparing(NISTTestResultDTO::testName))
                 .toList();
 
-        int passedCount = (int) tests.stream().filter(t -> t.passed).count();
-        int failedCount = tests.size() - passedCount;
-        double passRate = (double) passedCount / tests.size();
+        // Now testDTOs contains aggregated results (15 tests, not 15 × chunks)
+        int passedCount = (int) testDTOs.stream()
+                .filter(dto -> Boolean.TRUE.equals(dto.passed()))
+                .count();
+        int failedCount = testDTOs.size() - passedCount;
+        double passRate = testDTOs.isEmpty() ? 0.0 : (double) passedCount / testDTOs.size();
+
+        // Calculate total bits tested robustly, independent of firstTest metadata
         long datasetSizeBits = 0L;
-        if (firstTest.chunkCount != null && firstTest.chunkCount > 1) {
-            boolean[] seenChunks = new boolean[firstTest.chunkCount + 1];
-            for (NistTestResult test : tests) {
-                if (test.chunkIndex == null || test.chunkIndex <= 0 || test.chunkIndex >= seenChunks.length) {
-                    continue;
-                }
-                if (!seenChunks[test.chunkIndex]) {
-                    datasetSizeBits += test.bitsTested != null ? test.bitsTested : 0L;
-                    seenChunks[test.chunkIndex] = true;
-                }
+        Set<Integer> seenChunks = new HashSet<>();
+
+        for (NistTestResult test : tests) {
+            Integer chunkIdx = test.chunkIndex;
+            if (chunkIdx != null && !seenChunks.contains(chunkIdx)) {
+                seenChunks.add(chunkIdx);
+                datasetSizeBits += test.bitsTested != null ? test.bitsTested : 0L;
             }
         }
-        if (datasetSizeBits == 0L) {
+
+        // Fallback for legacy data without chunk metadata
+        if (datasetSizeBits == 0L && !tests.isEmpty()) {
+            NistTestResult firstTest = tests.get(0);
             datasetSizeBits = firstTest.dataSampleSize != null ? firstTest.dataSampleSize : 0L;
         }
 
+        // Use latest execution time from aggregated tests
+        Instant suiteExecutedAt = testDTOs.stream()
+                .map(NISTTestResultDTO::executedAt)
+                .max(Instant::compareTo)
+                .orElse(Instant.now());
+
+        NistTestResult firstTest = tests.get(0);
         return new NISTSuiteResultDTO(
-                testDTOs,
-                tests.size(),
-                passedCount,
-                failedCount,
-                passRate,
-                true, // Assuming uniformity check passed (not stored separately)
-                firstTest.executedAt,
-                datasetSizeBits,
-                new TimeWindowDTO(firstTest.windowStart, firstTest.windowEnd,
-                        Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours())
+                testDTOs,           // Aggregated tests (15, not 15 × chunks)
+                testDTOs.size(),    // Now correctly 15, not 30
+                passedCount,        // Aggregated pass count
+                failedCount,        // Aggregated fail count
+                passRate,           // Correct pass rate
+                true,               // Assuming uniformity check passed
+                suiteExecutedAt,    // Latest execution time from aggregated tests
+                datasetSizeBits,    // Robustly calculated from unique chunks
+                new TimeWindowDTO(
+                        firstTest.windowStart,
+                        firstTest.windowEnd,
+                        Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours()
+                )
         );
     }
 

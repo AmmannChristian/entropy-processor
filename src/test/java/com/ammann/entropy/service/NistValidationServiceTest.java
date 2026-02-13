@@ -219,6 +219,183 @@ class NistValidationServiceTest {
     }
 
     @Test
+    @TestTransaction
+    void getLatestValidationResult_SingleChunk() {
+        NistTestResult.deleteAll();
+        UUID runId = UUID.randomUUID();
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        // Create 15 tests, all chunkIndex=1, chunkCount=1
+        String[] testNames = {
+            "frequency_monobit", "block_frequency", "runs", "longest_run",
+            "rank", "dft", "non_overlapping_template", "overlapping_template",
+            "universal", "linear_complexity", "serial", "approximate_entropy",
+            "cumulative_sums_forward", "cumulative_sums_reverse", "random_excursions"
+        };
+
+        for (String testName : testNames) {
+            NistTestResult result = new NistTestResult(runId, testName, true, 0.9, start, end);
+            result.chunkIndex = 1;
+            result.chunkCount = 1;
+            result.bitsTested = 1000000L;
+            result.dataSampleSize = 1000000L;
+            result.persist();
+        }
+
+        NISTSuiteResultDTO dto = service.getLatestValidationResult();
+
+        assertThat(dto).isNotNull();
+        assertThat(dto.totalTests()).isEqualTo(15);
+        assertThat(dto.passedTests()).isEqualTo(15);
+        assertThat(dto.failedTests()).isEqualTo(0);
+        assertThat(dto.overallPassRate()).isEqualTo(1.0);
+    }
+
+    @Test
+    @TestTransaction
+    void getLatestValidationResult_MultipleChunks_AllPass() {
+        NistTestResult.deleteAll();
+        UUID runId = UUID.randomUUID();
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        // Create 2 chunks × 15 tests = 30 DB rows, all passed
+        String[] testNames = {
+            "frequency_monobit", "block_frequency", "runs", "longest_run",
+            "rank", "dft", "non_overlapping_template", "overlapping_template",
+            "universal", "linear_complexity", "serial", "approximate_entropy",
+            "cumulative_sums_forward", "cumulative_sums_reverse", "random_excursions"
+        };
+
+        for (int chunk = 1; chunk <= 2; chunk++) {
+            for (String testName : testNames) {
+                NistTestResult result = new NistTestResult(runId, testName, true, 0.5 + chunk * 0.1, start, end);
+                result.chunkIndex = chunk;
+                result.chunkCount = 2;
+                result.bitsTested = 1000000L;
+                result.persist();
+            }
+        }
+
+        NISTSuiteResultDTO dto = service.getLatestValidationResult();
+
+        assertThat(dto).isNotNull();
+        assertThat(dto.totalTests()).isEqualTo(15);
+        assertThat(dto.passedTests()).isEqualTo(15);
+        assertThat(dto.failedTests()).isEqualTo(0);
+        assertThat(dto.overallPassRate()).isEqualTo(1.0);
+        assertThat(dto.datasetSize()).isEqualTo(2000000L); // 2 chunks × 1M bits
+
+        // Verify all test results are passed
+        assertThat(dto.tests()).allMatch(test -> test.passed());
+    }
+
+    @Test
+    @TestTransaction
+    void getLatestValidationResult_MultipleChunks_OneChunkFails() {
+        NistTestResult.deleteAll();
+        UUID runId = UUID.randomUUID();
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        // Create 2 chunks, Chunk 1 has "runs" test failed, Chunk 2 all passed
+        String[] testNames = {
+            "frequency_monobit", "block_frequency", "runs", "longest_run",
+            "rank", "dft", "non_overlapping_template", "overlapping_template",
+            "universal", "linear_complexity", "serial", "approximate_entropy",
+            "cumulative_sums_forward", "cumulative_sums_reverse", "random_excursions"
+        };
+
+        for (int chunk = 1; chunk <= 2; chunk++) {
+            for (String testName : testNames) {
+                boolean passed = !(chunk == 1 && testName.equals("runs"));
+                NistTestResult result = new NistTestResult(runId, testName, passed, 0.5, start, end);
+                result.chunkIndex = chunk;
+                result.chunkCount = 2;
+                result.bitsTested = 1000000L;
+                result.persist();
+            }
+        }
+
+        NISTSuiteResultDTO dto = service.getLatestValidationResult();
+
+        assertThat(dto).isNotNull();
+        assertThat(dto.totalTests()).isEqualTo(15);
+        assertThat(dto.passedTests()).isEqualTo(14);
+        assertThat(dto.failedTests()).isEqualTo(1);
+        assertThat(dto.overallPassRate()).isCloseTo(14.0 / 15.0, org.assertj.core.data.Offset.offset(0.01));
+
+        // Verify "runs" test failed (because one chunk failed)
+        assertThat(dto.tests())
+            .filteredOn(test -> test.testName().equals("runs"))
+            .hasSize(1)
+            .allMatch(test -> !test.passed());
+
+        // Verify other tests passed
+        assertThat(dto.tests())
+            .filteredOn(test -> !test.testName().equals("runs"))
+            .allMatch(test -> test.passed());
+    }
+
+    @Test
+    @TestTransaction
+    void getLatestValidationResult_MultipleChunks_PValueAggregation() {
+        NistTestResult.deleteAll();
+        UUID runId = UUID.randomUUID();
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        // Create 2 chunks with different p-values for "frequency_monobit"
+        NistTestResult chunk1 = new NistTestResult(runId, "frequency_monobit", true, 0.5, start, end);
+        chunk1.chunkIndex = 1;
+        chunk1.chunkCount = 2;
+        chunk1.bitsTested = 1000000L;
+        chunk1.persist();
+
+        NistTestResult chunk2 = new NistTestResult(runId, "frequency_monobit", true, 0.2, start, end);
+        chunk2.chunkIndex = 2;
+        chunk2.chunkCount = 2;
+        chunk2.bitsTested = 1000000L;
+        chunk2.persist();
+
+        NISTSuiteResultDTO dto = service.getLatestValidationResult();
+
+        assertThat(dto).isNotNull();
+        assertThat(dto.totalTests()).isEqualTo(1);
+
+        // Verify aggregated result has minimum p-value (0.2)
+        assertThat(dto.tests()).hasSize(1);
+        assertThat(dto.tests().get(0).pValue()).isCloseTo(0.2, org.assertj.core.data.Offset.offset(0.001));
+        assertThat(dto.tests().get(0).passed()).isTrue();
+    }
+
+    @Test
+    @TestTransaction
+    void getLatestValidationResult_MultipleChunks_BitsTested() {
+        NistTestResult.deleteAll();
+        UUID runId = UUID.randomUUID();
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        // Create 3 chunks with bitsTested=1000000 each
+        for (int chunk = 1; chunk <= 3; chunk++) {
+            NistTestResult result = new NistTestResult(runId, "frequency_monobit", true, 0.5, start, end);
+            result.chunkIndex = chunk;
+            result.chunkCount = 3;
+            result.bitsTested = 1000000L;
+            result.persist();
+        }
+
+        NISTSuiteResultDTO dto = service.getLatestValidationResult();
+
+        assertThat(dto).isNotNull();
+        assertThat(dto.totalTests()).isEqualTo(1);
+        // Verify datasetSizeBits = sum of unique chunks (3 × 1M)
+        assertThat(dto.datasetSize()).isEqualTo(3000000L);
+    }
+
+    @Test
     void extractWhitenedBitsFallsBackToIntervals() throws Exception {
         EntropyData a = new EntropyData("t1", 1_000L, 1L);
         EntropyData b = new EntropyData("t2", 2_500L, 2L);
