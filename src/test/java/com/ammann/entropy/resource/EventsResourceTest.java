@@ -15,6 +15,8 @@ import com.ammann.entropy.model.EntropyData;
 import com.ammann.entropy.service.DataQualityService;
 import com.ammann.entropy.service.EntropyStatisticsService;
 import com.ammann.entropy.support.TestDataFactory;
+import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import java.time.Instant;
@@ -66,6 +68,17 @@ class EventsResourceTest {
                 .isInstanceOf(ValidationException.class);
         assertThatThrownBy(() -> resource.getRecentEvents(10001))
                 .isInstanceOf(ValidationException.class);
+    }
+
+    @Test
+    void getRecentEventsRequiresResourceLevelRoles() throws NoSuchMethodException {
+        var method = EventsResource.class.getMethod("getRecentEvents", int.class);
+
+        assertThat(method.getAnnotation(PermitAll.class)).isNull();
+
+        RolesAllowed classRoles = EventsResource.class.getAnnotation(RolesAllowed.class);
+        assertThat(classRoles).isNotNull();
+        assertThat(classRoles.value()).contains("ADMIN_ROLE", "USER_ROLE");
     }
 
     @Test

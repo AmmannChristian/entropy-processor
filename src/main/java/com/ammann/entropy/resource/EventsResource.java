@@ -63,8 +63,9 @@ public class EventsResource {
     @GET
     @Path(ApiProperties.Events.RECENT)
     @Operation(
-            summary = "Get Recent Events",
-            description = "Returns the most recent N entropy events from the radioactive decay source"
+            summary = "Get Recent Events (Authenticated)",
+            description = "Returns detailed entropy events including timing and quality metrics. "
+                    + "Requires authentication. For public access, use /api/v1/public/recent-activity."
     )
     @APIResponses({
             @APIResponse(responseCode = "200", description = "Recent events retrieved successfully",
@@ -72,7 +73,6 @@ public class EventsResource {
             @APIResponse(responseCode = "400", description = "Invalid parameters"),
             @APIResponse(responseCode = "500", description = "Internal server error")
     })
-    @PermitAll
     public Response getRecentEvents(
             @Parameter(description = "Number of recent events to return (max 10000)")
             @QueryParam("count") @DefaultValue("100") int count) {

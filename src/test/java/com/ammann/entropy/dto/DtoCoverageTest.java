@@ -97,5 +97,13 @@ class DtoCoverageTest {
                 new RecentEventsResponseDTO(List.of(summary), 1, now, later);
         assertThat(recent.events()).hasSize(1);
         assertThat(recent.events().get(0).intervalToPreviousNs()).isEqualTo(50L);
+
+        PublicActivityResponseDTO.PublicEventSummaryDTO publicSummary =
+                new PublicActivityResponseDTO.PublicEventSummaryDTO(10L, 42L, now);
+        PublicActivityResponseDTO publicRecent =
+                new PublicActivityResponseDTO(List.of(publicSummary), 1, later);
+        assertThat(publicRecent.events()).hasSize(1);
+        assertThat(publicRecent.events().getFirst().sequenceNumber()).isEqualTo(42L);
+        assertThat(publicRecent.latestActivity()).isEqualTo(later);
     }
 }

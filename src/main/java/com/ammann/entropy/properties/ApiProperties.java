@@ -52,6 +52,15 @@ public final class ApiProperties {
     }
 
     /**
+     * Public unauthenticated endpoints
+     */
+    public static final class Public {
+        private Public() {}
+        public static final String BASE = "/public";
+        public static final String RECENT_ACTIVITY = BASE + "/recent-activity";
+    }
+
+    /**
      * System monitoring endpoints
      */
     public static final class System {
@@ -59,7 +68,6 @@ public final class ApiProperties {
         public static final String BASE = "/system";
         public static final String STATUS = BASE + "/status";
         public static final String CONFIG = BASE + "/config";
-        public static final String METRICS = BASE + "/metrics";
     }
 
     /**
@@ -68,8 +76,6 @@ public final class ApiProperties {
     public static final class Admin {
         private Admin() {}
         public static final String BASE = "/admin";
-        public static final String UDP_RESTART = BASE + "/udp/restart";
-        public static final String UDP_STATUS = BASE + "/udp/status";
         public static final String MAINTENANCE = BASE + "/maintenance";
     }
 
