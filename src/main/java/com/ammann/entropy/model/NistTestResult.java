@@ -4,6 +4,9 @@ import com.ammann.entropy.dto.NISTTestResultDTO;
 import io.quarkus.hibernate.orm.panache.PanacheEntity;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
+import org.hibernate.annotations.ColumnTransformer;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -13,6 +16,7 @@ import java.util.UUID;
 @Entity
 @Table(name = "nist_test_results", indexes = {
         @Index(name = "idx_test_suite_run", columnList = "test_suite_run_id"),
+        @Index(name = "idx_test_suite_run_chunk", columnList = "test_suite_run_id,chunk_index"),
         @Index(name = "idx_executed_at", columnList = "executed_at"),
         @Index(name = "idx_passed", columnList = "passed")
 })
@@ -67,6 +71,20 @@ public class NistTestResult extends PanacheEntity {
     public Long bitsTested;
 
     /**
+     * 1-based chunk index within a test suite run.
+     * Null for historical rows that predate chunked execution.
+     */
+    @Column(name = "chunk_index")
+    public Integer chunkIndex;
+
+    /**
+     * Total number of chunks in this suite run.
+     * Null for historical rows that predate chunked execution.
+     */
+    @Column(name = "chunk_count")
+    public Integer chunkCount;
+
+    /**
      * Start of the time window from which test data was extracted.
      */
     @Column(name = "window_start", nullable = false)
@@ -91,6 +109,8 @@ public class NistTestResult extends PanacheEntity {
      * Additional test-specific details in JSON format.
      * Examples: test parameters, intermediate statistics, failure reasons.
      */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @ColumnTransformer(write = "CAST(? AS jsonb)")
     @Column(name = "details", columnDefinition = "jsonb")
     public String details;
 
@@ -119,7 +139,7 @@ public class NistTestResult extends PanacheEntity {
      * @return List of all tests in that run (typically 15 tests)
      */
     public static List<NistTestResult> findByTestSuiteRun(UUID runId) {
-        return find("testSuiteRunId", runId).list();
+        return find("testSuiteRunId = ?1 ORDER BY chunkIndex, id", runId).list();
     }
 
     /**

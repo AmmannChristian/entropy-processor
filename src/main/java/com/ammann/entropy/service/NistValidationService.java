@@ -5,6 +5,7 @@ import com.ammann.entropy.dto.NISTSuiteResultDTO;
 import com.ammann.entropy.dto.NISTTestResultDTO;
 import com.ammann.entropy.dto.TimeWindowDTO;
 import com.ammann.entropy.exception.NistException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ammann.entropy.grpc.proto.sp80022.*;
 import com.ammann.entropy.grpc.proto.sp80090b.*;
 import com.ammann.entropy.model.EntropyData;
@@ -14,6 +15,8 @@ import io.grpc.CallCredentials;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.stub.AbstractStub;
+import io.grpc.stub.MetadataUtils;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.grpc.GrpcClient;
@@ -23,6 +26,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.io.ByteArrayOutputStream;
@@ -30,6 +34,7 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -50,7 +55,12 @@ public class NistValidationService
 {
 
     private static final Logger LOG = Logger.getLogger(NistValidationService.class);
-    private static final int MIN_BITS_REQUIRED = 1_000_000; // 1 Mbit minimum for NIST tests
+    private static final int DEFAULT_SP80022_MAX_BYTES = 1_250_000;
+    private static final long DEFAULT_SP80022_MIN_BITS = 1_000_000L;
+    private static final int DEFAULT_SP80090B_MAX_BYTES = 1_000_000;
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    private static final Metadata.Key<String> AUTHORIZATION_KEY =
+            Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
     @GrpcClient("sp80022-test-service")
     MutinySp80022TestServiceGrpc.MutinySp80022TestServiceStub sp80022Client;
@@ -59,6 +69,16 @@ public class NistValidationService
 
     private Sp80022TestService clientOverride;
     private Sp80090bAssessmentService sp80090bOverride;
+
+    @ConfigProperty(name = "nist.sp80022.max-bytes", defaultValue = "1250000")
+    int sp80022MaxBytes;
+
+    @ConfigProperty(name = "nist.sp80022.min-bits", defaultValue = "1000000")
+    long sp80022MinBits;
+
+    @ConfigProperty(name = "nist.sp80090b.max-bytes", defaultValue = "1000000")
+    int sp80090bMaxBytes;
+
     private final EntityManager em;
     private final MeterRegistry meterRegistry;
     private final OidcClientService oidcClientService;
@@ -119,6 +139,32 @@ public class NistValidationService
     }
 
     /**
+     * Weekly scheduled NIST SP 800-90B validation.
+     * <p>
+     * Default schedule is Sunday at 00:00 UTC and can be overridden with
+     * nist.sp80090b.weekly-cron / SP80090B_WEEKLY_CRON.
+     */
+    @Scheduled(cron = "{nist.sp80090b.weekly-cron}")
+    @Transactional
+    public void runWeeklyNIST90BValidation()
+    {
+        initMetrics();
+        LOG.info("Starting weekly NIST SP 800-90B validation");
+
+        Instant end = Instant.now();
+        Instant start = end.minus(Duration.ofDays(7));
+
+        try {
+            NIST90BResultDTO result = validate90BTimeWindow(start, end);
+            LOG.infof("Weekly NIST SP 800-90B completed: minEntropy=%.6f, passed=%b, bits=%d",
+                    result.minEntropy(), result.passed(), result.bitsTested());
+        } catch (Exception e) {
+            LOG.errorf(e, "Weekly NIST SP 800-90B validation failed");
+            recordFailureMetric();
+        }
+    }
+
+    /**
      * Manual validation of a specific time window.
      * Uses OidcClientService to obtain a service token for gRPC calls.
      * <p>
@@ -159,7 +205,7 @@ public class NistValidationService
     public NISTSuiteResultDTO validateTimeWindow(Instant start, Instant end, String bearerToken)
     {
         initMetrics();
-        LOG.infof("Validating time window: %s to %s (token propagation: %b)", start, end, bearerToken != null);
+        LOG.infof("Validating NIST SP 800-22 window: %s to %s (token propagation: %b)", start, end, bearerToken != null);
 
         // Load entropy data from TimescaleDB
         List<EntropyData> events = EntropyData.findInTimeWindow(start, end);
@@ -174,65 +220,79 @@ public class NistValidationService
 
         // Step 2: Extract whitened entropy bits
         byte[] bitstream = extractWhitenedBits(events);
-        long bitstreamLength = bitstream.length * 8L;
+        long bitstreamLengthBits = bitstream.length * 8L;
+        long minBitsRequired = getEffectiveSp80022MinBits();
 
-        if (bitstreamLength < MIN_BITS_REQUIRED) {
-            LOG.warnf("Insufficient bits: %d (minimum: %d)", bitstreamLength, MIN_BITS_REQUIRED);
+        if (bitstreamLengthBits < minBitsRequired) {
+            LOG.warnf("Insufficient bits for NIST SP 800-22: %d (minimum: %d)", bitstreamLengthBits, minBitsRequired);
             recordFailureMetric();
             throw new NistException(
-                    String.format("Need at least %d bits, got %d", MIN_BITS_REQUIRED, bitstreamLength));
+                    String.format("Need at least %d bits, got %d", minBitsRequired, bitstreamLengthBits));
         }
 
-        LOG.infof("Extracted %d bits (%d bytes) for NIST testing", bitstreamLength, bitstream.length);
+        validateSp80022ChunkConfig();
+        List<byte[]> chunks = splitSp80022Chunks(bitstream);
+        LOG.infof("NIST SP 800-22 run window=%s..%s totalBytes=%d totalBits=%d chunks=%d maxChunkBytes=%d",
+                start, end, bitstream.length, bitstreamLengthBits, chunks.size(), getEffectiveSp80022MaxBytes());
+
         String batchId = events.getFirst().batchId;
-
-        // Call NIST SP 800-22 gRPC service
-        Sp80022TestResponse grpcResult = runSp80022Tests(bitstream, bearerToken);
-
-        // Also run NIST SP 800-90B entropy assessment
-        NIST90BResultDTO entropyAssessment = assess90B(bitstream, batchId, start, end, bearerToken);
-        LOG.infof("NIST SP 800-90B assessment: min=%.6f, passed=%b",
-                entropyAssessment.minEntropy(), entropyAssessment.passed());
-
-        // Persist results
         UUID testSuiteRunId = UUID.randomUUID();
         List<NISTTestResultDTO> testDTOs = new ArrayList<>();
+        List<NistTestResult> entitiesToPersist = new ArrayList<>();
+        int totalTests = 0;
+        int passedCount = 0;
+        boolean allChunksCompliant = true;
 
-        for (Sp80022TestResult test : grpcResult.getResultsList()) {
-            NistTestResult entity = new NistTestResult(
+        for (int i = 0; i < chunks.size(); i++) {
+            byte[] chunk = chunks.get(i);
+            long chunkBits = chunk.length * 8L;
+
+            Sp80022TestResponse grpcResult = runSp80022Tests(chunk, bearerToken);
+            int chunkPassedCount = (int) grpcResult.getResultsList().stream().filter(Sp80022TestResult::getPassed).count();
+            int chunkTotalTests = grpcResult.getTestsRun();
+
+            LOG.infof("NIST SP 800-22 chunk=%d/%d bytes=%d bits=%d passed=%d/%d compliant=%b passRate=%.6f",
+                    i + 1,
+                    chunks.size(),
+                    chunk.length,
+                    chunkBits,
+                    chunkPassedCount,
+                    chunkTotalTests,
+                    grpcResult.getNistCompliant(),
+                    grpcResult.getOverallPassRate());
+
+            collectSp80022ChunkResults(grpcResult,
                     testSuiteRunId,
-                    test.getName(),
-                    test.getPassed(),
-                    test.getPValue(),
+                    batchId,
                     start,
-                    end
-            );
-            entity.dataSampleSize = bitstreamLength;
-            entity.bitsTested = bitstreamLength;
-            entity.batchId = batchId;
-            entity.details = test.hasWarning() ? test.getWarning() : null;
+                    end,
+                    i + 1,
+                    chunks.size(),
+                    chunkBits,
+                    entitiesToPersist,
+                    testDTOs);
 
-            em.persist(entity);
-            testDTOs.add(entity.toDTO());
+            totalTests += chunkTotalTests;
+            passedCount += chunkPassedCount;
+            allChunksCompliant &= grpcResult.getNistCompliant();
         }
 
-        LOG.infof("Persisted %d NIST test results with run ID: %s", testDTOs.size(), testSuiteRunId);
-
-        // Calculate passed/failed from actual results
-        int passedCount = (int) grpcResult.getResultsList().stream().filter(Sp80022TestResult::getPassed).count();
-        int totalTests = grpcResult.getTestsRun();
         int failedCount = totalTests - passedCount;
+        double overallPassRate = totalTests > 0 ? (double) passedCount / totalTests : 0.0;
+        persistNistTestResultsBatch(entitiesToPersist);
 
-        // Build result DTO
+        LOG.infof("NIST SP 800-22 run completed: runId=%s passed=%d/%d passRate=%.6f allChunksCompliant=%b",
+                testSuiteRunId, passedCount, totalTests, overallPassRate, allChunksCompliant);
+
         return new NISTSuiteResultDTO(
                 testDTOs,
                 totalTests,
                 passedCount,
                 failedCount,
-                grpcResult.getOverallPassRate(),
-                grpcResult.getNistCompliant(), // Use nist_compliant as uniformity indicator
+                overallPassRate,
+                allChunksCompliant,
                 Instant.now(),
-                bitstreamLength,
+                bitstreamLengthBits,
                 new TimeWindowDTO(start, end, Duration.between(start, end).toHours())
         );
     }
@@ -258,7 +318,7 @@ public class NistValidationService
             var client = sp80022Client;
             String token = resolveToken(bearerToken, "NIST SP 800-22");
             if (token != null) {
-                client = client.withCallCredentials(new BearerTokenCallCredentials(token));
+                client = withBearerToken(client, token);
             }
             return client.runTestSuite(request).await().atMost(Duration.ofMinutes(10));
 
@@ -271,6 +331,103 @@ public class NistValidationService
             recordFailureMetric();
             throw new NistException("NIST gRPC call failed", e);
         }
+    }
+
+    private void collectSp80022ChunkResults(Sp80022TestResponse grpcResult,
+                                            UUID testSuiteRunId,
+                                            String batchId,
+                                            Instant start,
+                                            Instant end,
+                                            int chunkIndex,
+                                            int chunkCount,
+                                            long chunkBits,
+                                            List<NistTestResult> entitiesToPersist,
+                                            List<NISTTestResultDTO> testDTOs)
+    {
+        for (Sp80022TestResult test : grpcResult.getResultsList()) {
+            NistTestResult entity = new NistTestResult(
+                    testSuiteRunId,
+                    test.getName(),
+                    test.getPassed(),
+                    test.getPValue(),
+                    start,
+                    end
+            );
+            entity.dataSampleSize = chunkBits;
+            entity.bitsTested = chunkBits;
+            entity.batchId = batchId;
+            entity.chunkIndex = chunkIndex;
+            entity.chunkCount = chunkCount;
+            entity.details = test.hasWarning() ? ensureJsonDocument(test.getWarning(), "warning") : null;
+
+            entitiesToPersist.add(entity);
+            testDTOs.add(entity.toDTO());
+        }
+    }
+
+    private void persistNistTestResultsBatch(List<NistTestResult> entitiesToPersist)
+    {
+        for (NistTestResult entity : entitiesToPersist) {
+            em.persist(entity);
+        }
+        em.flush();
+        LOG.infof("Persisted %d NIST SP 800-22 test result rows", entitiesToPersist.size());
+    }
+
+    private void validateSp80022ChunkConfig()
+    {
+        long minBits = getEffectiveSp80022MinBits();
+        int maxBytes = getEffectiveSp80022MaxBytes();
+        long maxBits = maxBytes * 8L;
+        if (maxBits < minBits) {
+            throw new NistException(String.format(
+                    "Invalid SP800-22 configuration: max bytes (%d) are below min bits (%d)",
+                    maxBytes,
+                    minBits));
+        }
+    }
+
+    private List<byte[]> splitSp80022Chunks(byte[] bitstream)
+    {
+        int maxBytes = getEffectiveSp80022MaxBytes();
+        int minBytes = (int) Math.ceil(getEffectiveSp80022MinBits() / 8.0);
+
+        if (bitstream.length <= maxBytes) {
+            return List.of(bitstream);
+        }
+
+        List<byte[]> chunks = new ArrayList<>();
+        int offset = 0;
+        while (offset < bitstream.length) {
+            int remaining = bitstream.length - offset;
+            int chunkSize = Math.min(maxBytes, remaining);
+
+            // Keep the last chunk above the minimum size by rebalancing with the current chunk.
+            if (remaining > maxBytes && (remaining - chunkSize) < minBytes) {
+                chunkSize = remaining - minBytes;
+            }
+
+            byte[] chunk = Arrays.copyOfRange(bitstream, offset, offset + chunkSize);
+            chunks.add(chunk);
+            offset += chunkSize;
+        }
+
+        return chunks;
+    }
+
+    private int getEffectiveSp80022MaxBytes()
+    {
+        return sp80022MaxBytes > 0 ? sp80022MaxBytes : DEFAULT_SP80022_MAX_BYTES;
+    }
+
+    private long getEffectiveSp80022MinBits()
+    {
+        return sp80022MinBits > 0 ? sp80022MinBits : DEFAULT_SP80022_MIN_BITS;
+    }
+
+    private int getEffectiveSp80090bMaxBytes()
+    {
+        return sp80090bMaxBytes > 0 ? sp80090bMaxBytes : DEFAULT_SP80090B_MAX_BYTES;
     }
 
     /**
@@ -302,6 +459,51 @@ public class NistValidationService
 
         LOG.debugf("No authentication configured for %s call", serviceName);
         return null;
+    }
+
+    @Transactional
+    public NIST90BResultDTO validate90BTimeWindow(Instant start, Instant end)
+    {
+        return validate90BTimeWindow(start, end, null);
+    }
+
+    @Transactional
+    public NIST90BResultDTO validate90BTimeWindow(Instant start, Instant end, String bearerToken)
+    {
+        initMetrics();
+        LOG.infof("Validating NIST SP 800-90B window: %s to %s (token propagation: %b)", start, end, bearerToken != null);
+
+        List<EntropyData> events = EntropyData.findInTimeWindow(start, end);
+        if (events.isEmpty()) {
+            LOG.warnf("Skipping NIST SP 800-90B: no entropy data found in window %s to %s", start, end);
+            recordFailureMetric();
+            throw new NistException("No entropy data in specified window");
+        }
+
+        byte[] bitstream = extractWhitenedBits(events);
+        if (bitstream.length == 0) {
+            LOG.warnf("Skipping NIST SP 800-90B: extracted bitstream is empty in window %s to %s", start, end);
+            recordFailureMetric();
+            throw new NistException("No usable entropy bitstream in specified window");
+        }
+
+        int sourceBytes = bitstream.length;
+        int maxBytes = getEffectiveSp80090bMaxBytes();
+        byte[] assessmentSample = bitstream;
+        if (sourceBytes > maxBytes) {
+            assessmentSample = Arrays.copyOf(bitstream, maxBytes);
+            LOG.warnf("NIST SP 800-90B input exceeds limit: sourceBytes=%d maxBytes=%d. Truncating assessment sample.",
+                    sourceBytes, maxBytes);
+        }
+
+        LOG.infof("NIST SP 800-90B run window=%s..%s sourceBytes=%d assessmentBytes=%d",
+                start, end, sourceBytes, assessmentSample.length);
+
+        String batchId = events.getFirst().batchId;
+        NIST90BResultDTO result = assess90B(assessmentSample, batchId, start, end, bearerToken);
+        LOG.infof("NIST SP 800-90B assessment complete: minEntropy=%.6f, passed=%b, bits=%d",
+                result.minEntropy(), result.passed(), result.bitsTested());
+        return result;
     }
 
     /**
@@ -338,7 +540,7 @@ public class NistValidationService
                 var client = sp80090bClient;
                 String token = resolveToken(bearerToken, "NIST SP 800-90B");
                 if (token != null) {
-                    client = client.withCallCredentials(new BearerTokenCallCredentials(token));
+                    client = withBearerToken(client, token);
                 }
                 entropyResult = client.assessEntropy(request).await().atMost(Duration.ofMinutes(10));
             }
@@ -369,7 +571,7 @@ public class NistValidationService
                 markovEntropy,
                 compressionEntropy,
                 entropyResult.getPassed(),
-                entropyResult.getAssessmentSummary(),
+                ensureJsonDocument(entropyResult.getAssessmentSummary(), "summary"),
                 bitstreamLength,
                 start,
                 end
@@ -397,6 +599,32 @@ public class NistValidationService
             }
         }
         return 0.0; // Not found
+    }
+
+    private String ensureJsonDocument(String rawValue, String fallbackField)
+    {
+        if (rawValue == null || rawValue.isBlank()) {
+            return null;
+        }
+
+        try {
+            JSON_MAPPER.readTree(rawValue);
+            return rawValue;
+        } catch (Exception ignored) {
+            return JSON_MAPPER.createObjectNode()
+                    .put(fallbackField, rawValue)
+                    .toString();
+        }
+    }
+
+    /**
+     * Attaches a Bearer token header to a gRPC stub.
+     */
+    private <T extends AbstractStub<T>> T withBearerToken(T client, String token)
+    {
+        Metadata headers = new Metadata();
+        headers.put(AUTHORIZATION_KEY, "Bearer " + token);
+        return client.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers));
     }
 
     /**
@@ -481,6 +709,22 @@ public class NistValidationService
         int passedCount = (int) tests.stream().filter(t -> t.passed).count();
         int failedCount = tests.size() - passedCount;
         double passRate = (double) passedCount / tests.size();
+        long datasetSizeBits = 0L;
+        if (firstTest.chunkCount != null && firstTest.chunkCount > 1) {
+            boolean[] seenChunks = new boolean[firstTest.chunkCount + 1];
+            for (NistTestResult test : tests) {
+                if (test.chunkIndex == null || test.chunkIndex <= 0 || test.chunkIndex >= seenChunks.length) {
+                    continue;
+                }
+                if (!seenChunks[test.chunkIndex]) {
+                    datasetSizeBits += test.bitsTested != null ? test.bitsTested : 0L;
+                    seenChunks[test.chunkIndex] = true;
+                }
+            }
+        }
+        if (datasetSizeBits == 0L) {
+            datasetSizeBits = firstTest.dataSampleSize != null ? firstTest.dataSampleSize : 0L;
+        }
 
         return new NISTSuiteResultDTO(
                 testDTOs,
@@ -490,7 +734,7 @@ public class NistValidationService
                 passRate,
                 true, // Assuming uniformity check passed (not stored separately)
                 firstTest.executedAt,
-                firstTest.dataSampleSize,
+                datasetSizeBits,
                 new TimeWindowDTO(firstTest.windowStart, firstTest.windowEnd,
                         Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours())
         );
@@ -512,6 +756,51 @@ public class NistValidationService
         this.sp80090bOverride = override;
     }
 
+    void setSp80022MaxBytesForTesting(int maxBytes)
+    {
+        this.sp80022MaxBytes = maxBytes;
+    }
+
+    void setSp80022MinBitsForTesting(long minBits)
+    {
+        this.sp80022MinBits = minBits;
+    }
+
+    void setSp80090bMaxBytesForTesting(int maxBytes)
+    {
+        this.sp80090bMaxBytes = maxBytes;
+    }
+
+    private static final class BearerTokenCallCredentials extends CallCredentials
+    {
+        private final String token;
+
+        private BearerTokenCallCredentials(String token)
+        {
+            this.token = token;
+        }
+
+        @Override
+        public void applyRequestMetadata(RequestInfo requestInfo, Executor appExecutor, MetadataApplier applier)
+        {
+            appExecutor.execute(() -> {
+                try {
+                    Metadata headers = new Metadata();
+                    headers.put(AUTHORIZATION_KEY, "Bearer " + token);
+                    applier.apply(headers);
+                } catch (RuntimeException e) {
+                    applier.fail(Status.UNAUTHENTICATED.withCause(e));
+                }
+            });
+        }
+
+        @Override
+        public void thisUsesUnstableApi()
+        {
+            // Required by gRPC CallCredentials contract.
+        }
+    }
+
     private void recordFailureMetric()
     {
         if (validationFailureCounter != null) {
@@ -531,33 +820,4 @@ public class NistValidationService
         return PanacheEntityBase.count("executedAt > ?1 AND passed = false", since);
     }
 
-    /**
-     * gRPC CallCredentials that adds Bearer token to metadata.
-     * Sets the "authorization" header with "Bearer TOKEN" format.
-     */
-    private static class BearerTokenCallCredentials extends CallCredentials
-    {
-        private static final Metadata.Key<String> AUTHORIZATION_KEY =
-                Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
-        private final String token;
-
-        BearerTokenCallCredentials(String token)
-        {
-            this.token = token;
-        }
-
-        @Override
-        public void applyRequestMetadata(RequestInfo requestInfo, Executor executor, MetadataApplier applier)
-        {
-            executor.execute(() -> {
-                try {
-                    Metadata headers = new Metadata();
-                    headers.put(AUTHORIZATION_KEY, "Bearer " + token);
-                    applier.apply(headers);
-                } catch (Exception e) {
-                    applier.fail(Status.UNAUTHENTICATED.withCause(e));
-                }
-            });
-        }
-    }
 }

@@ -7,6 +7,9 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.ColumnTransformer;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -56,6 +59,8 @@ public class Nist90BResult extends PanacheEntity {
     public boolean passed;
 
     /** Detailed assessment output stored as a JSONB document. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @ColumnTransformer(write = "CAST(? AS jsonb)")
     @Column(name = "assessment_details", columnDefinition = "jsonb")
     public String assessmentDetails;
 
