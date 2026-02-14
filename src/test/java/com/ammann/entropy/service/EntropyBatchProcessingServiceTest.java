@@ -9,6 +9,8 @@ import com.ammann.entropy.grpc.proto.TDCEvent;
 import com.ammann.entropy.model.EntropyData;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,6 +39,48 @@ class EntropyBatchProcessingServiceTest
         assertThat(entities.get(0).batchId).isEqualTo("sensor-x-7");
         assertThat(entities.get(0).sequenceNumber).isEqualTo(70_000L);
         assertThat(entities.get(1).sequenceNumber).isEqualTo(70_001L);
+    }
+
+    @Test
+    void keepsInboundWhitenedEntropyPerEventUnchanged()
+    {
+        long nowUs = System.currentTimeMillis() * 1000;
+        byte[] firstWhitened = validWhitenedEntropy((byte) 11);
+        byte[] secondWhitened = validWhitenedEntropy((byte) 42);
+        EntropyBatch batch = EntropyBatch.newBuilder()
+                .setBatchSequence(12)
+                .setSourceId("sensor-y")
+                .addEvents(validEvent(nowUs, 123_456_789L, firstWhitened))
+                .addEvents(validEvent(nowUs + 1_000, 223_456_789L, secondWhitened))
+                .build();
+
+        List<EntropyData> entities = service.toEntities(batch);
+
+        assertThat(entities).hasSize(2);
+        assertThat(entities.get(0).whitenedEntropy).containsExactly(firstWhitened);
+        assertThat(entities.get(1).whitenedEntropy).containsExactly(secondWhitened);
+    }
+
+    @Test
+    void auditModeDoesNotOverwriteInboundWhitenedEntropy() throws Exception
+    {
+        EntropyBatchProcessingService auditService = new EntropyBatchProcessingService(mappingService);
+        setAuditMode(auditService, true);
+
+        byte[] mismatchingWhitened = new byte[GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES];
+        Arrays.fill(mismatchingWhitened, (byte) 0x5A);
+
+        long nowUs = System.currentTimeMillis() * 1000;
+        EntropyBatch batch = EntropyBatch.newBuilder()
+                .setBatchSequence(13)
+                .setSourceId("sensor-audit")
+                .addEvents(validEvent(nowUs, 777_777_777L, mismatchingWhitened))
+                .build();
+
+        List<EntropyData> entities = auditService.toEntities(batch);
+
+        assertThat(entities).hasSize(1);
+        assertThat(entities.getFirst().whitenedEntropy).containsExactly(mismatchingWhitened);
     }
 
     @Test
@@ -70,7 +114,7 @@ class EntropyBatchProcessingServiceTest
 
         EntropyBatch warningBatch = EntropyBatch.newBuilder()
                 .setBatchSequence(2)
-                .addEvents(validEvent(1_000_000, 2_000_000))
+                .addEvents(validEvent(1_000_000, 2_000_000, validWhitenedEntropy((byte) 1)))
                 .setMetrics(EdgeMetrics.newBuilder()
                         .setQuickShannonEntropy(0.1)
                         .setFrequencyTestPassed(false)
@@ -95,7 +139,7 @@ class EntropyBatchProcessingServiceTest
 
         EntropyBatch batch = EntropyBatch.newBuilder()
                 .setBatchSequence(9)
-                .addEvents(validEvent(1_000_000, 2_000_000))
+                .addEvents(validEvent(1_000_000, 2_000_000, validWhitenedEntropy((byte) 2)))
                 .setMetrics(metrics)
                 .setTests(com.ammann.entropy.grpc.proto.TestSummary.newBuilder()
                         .setFreqPvalue(0.8)
@@ -120,7 +164,7 @@ class EntropyBatchProcessingServiceTest
     {
         EntropyBatch batch = EntropyBatch.newBuilder()
                 .setBatchSequence(3)
-                .addEvents(validEvent(1_000, 2_000))
+                .addEvents(validEvent(1_000, 2_000, validWhitenedEntropy((byte) 3)))
                 .build();
 
         assertThat(service.extractEdgeMetrics(batch)).isNull();
@@ -140,10 +184,32 @@ class EntropyBatchProcessingServiceTest
 
     private TDCEvent validEvent(long rpiTsUs, long tdcPs)
     {
+        return validEvent(rpiTsUs, tdcPs, validWhitenedEntropy((byte) 7));
+    }
+
+    private TDCEvent validEvent(long rpiTsUs, long tdcPs, byte[] whitenedEntropy)
+    {
         return TDCEvent.newBuilder()
                 .setRpiTimestampUs(rpiTsUs)
                 .setTdcTimestampPs(tdcPs)
                 .setChannel(1)
+                .setWhitenedEntropy(com.google.protobuf.ByteString.copyFrom(whitenedEntropy))
                 .build();
+    }
+
+    private byte[] validWhitenedEntropy(byte seed)
+    {
+        byte[] bytes = new byte[GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) (seed + i);
+        }
+        return bytes;
+    }
+
+    private void setAuditMode(EntropyBatchProcessingService target, boolean enabled) throws Exception
+    {
+        Field field = EntropyBatchProcessingService.class.getDeclaredField("whitenedAuditEnabled");
+        field.setAccessible(true);
+        field.setBoolean(target, enabled);
     }
 }

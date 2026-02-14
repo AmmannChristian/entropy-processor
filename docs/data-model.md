@@ -111,7 +111,7 @@ The primary data table storing individual radioactive decay events captured by T
 | `rpi_timestamp_us` | `BIGINT` | Yes | Gateway ingestion timestamp in microseconds since Unix epoch (set when MQTT event is received at edge gateway) |
 | `tdc_timestamp_ps` | `BIGINT` | Yes | Raw TDC timestamp in picoseconds (original hardware precision) |
 | `channel` | `INTEGER` | Yes | TDC input channel that detected the decay event |
-| `whitened_entropy` | `BYTEA` | Yes | 8-byte XOR-folded byte array derived from TDC and RPI timestamps |
+| `whitened_entropy` | `BYTEA` | Yes | Gateway-provided per-event whitened entropy; expected length is 32 bytes (SHA-256 output of dual-stage whitening over canonical event bytes) |
 | `sequence` | `BIGINT` | No | Monotonically increasing sequence number for gap detection |
 | `server_received` | `TIMESTAMPTZ` | No | Server-side reception timestamp; serves as the TimescaleDB partition key |
 | `network_delay_ms` | `BIGINT` | Yes | Estimated delay between edge gateway ingestion and cloud server reception, in milliseconds |

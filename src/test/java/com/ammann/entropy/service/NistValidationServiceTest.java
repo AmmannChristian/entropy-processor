@@ -83,7 +83,7 @@ class NistValidationServiceTest {
         EntropyData.deleteAll();
         EntropyData event =
                 TestDataFactory.createEntropyEvent(1, 1_000L, Instant.now().minusSeconds(5));
-        event.whitenedEntropy = new byte[] {1};
+        event.whitenedEntropy = new byte[GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES];
         event.persist();
 
         Instant start = Instant.now().minusSeconds(10);
@@ -144,7 +144,7 @@ class NistValidationServiceTest {
         seedEntropyEvents("batch-chunked");
         service.setClientOverride(sp80022Success());
         service.setSp80022MinBitsForTesting(8_000L);
-        service.setSp80022MaxBytesForTesting(30_000);
+        service.setSp80022MaxBytesForTesting(3_200);
 
         Instant start = Instant.now().minusSeconds(60);
         Instant end = Instant.now();
@@ -396,26 +396,29 @@ class NistValidationServiceTest {
     }
 
     @Test
-    void extractWhitenedBitsFallsBackToIntervals() throws Exception {
+    void extractWhitenedBitsThrowsWhenWhitenedEntropyMissing() {
         EntropyData a = new EntropyData("t1", 1_000L, 1L);
         EntropyData b = new EntropyData("t2", 2_500L, 2L);
-        EntropyData c = new EntropyData("t3", 4_000L, 3L);
 
-        byte[] bytes = invokeExtractWhitenedBits(List.of(a, b, c));
-
-        assertThat(bytes.length).isEqualTo(8);
+        assertThatThrownBy(() -> invokeExtractWhitenedBits(List.of(a, b)))
+                .isInstanceOf(NistException.class)
+                .hasMessageContaining("Missing whitened_entropy");
     }
 
     @Test
     void extractWhitenedBitsUsesWhitenedEntropyWhenPresent() throws Exception {
         EntropyData a = new EntropyData("t1", 1_000L, 1L);
-        a.whitenedEntropy = new byte[] {1, 2, 3};
+        a.whitenedEntropy = fixedEntropyChunk((byte) 1);
         EntropyData b = new EntropyData("t2", 2_000L, 2L);
-        b.whitenedEntropy = new byte[] {4};
+        b.whitenedEntropy = fixedEntropyChunk((byte) 99);
 
         byte[] bytes = invokeExtractWhitenedBits(List.of(a, b));
+        byte[] expected = new byte[2 * GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES];
+        System.arraycopy(a.whitenedEntropy, 0, expected, 0, a.whitenedEntropy.length);
+        System.arraycopy(b.whitenedEntropy, 0, expected, a.whitenedEntropy.length, b.whitenedEntropy.length);
 
-        assertThat(bytes).containsExactly(1, 2, 3, 4);
+        assertThat(bytes.length).isEqualTo(expected.length);
+        assertThat(bytes).containsExactly(expected);
     }
 
     @Test
@@ -506,7 +509,14 @@ class NistValidationServiceTest {
         var method =
                 NistValidationService.class.getDeclaredMethod("extractWhitenedBits", List.class);
         method.setAccessible(true);
-        return (byte[]) method.invoke(service, events);
+        try {
+            return (byte[]) method.invoke(service, events);
+        } catch (InvocationTargetException e) {
+            if (e.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw e;
+        }
     }
 
     private String invokeResolveToken(
@@ -545,8 +555,10 @@ class NistValidationServiceTest {
         NistTestResult.deleteAll();
         Nist90BResult.deleteAll();
 
+        // Test fixtures use canonical 32-byte chunks to mirror gateway contract.
+        service.setSp80022MinBitsForTesting(100_000L);
         Instant base = Instant.now().minusSeconds(5);
-        byte[] chunk = new byte[255];
+        byte[] chunk = fixedEntropyChunk((byte) 17);
         var events = TestDataFactory.buildSequentialEvents(500, 1_000L, base);
         events.forEach(
                 event -> {
@@ -554,6 +566,14 @@ class NistValidationServiceTest {
                     event.whitenedEntropy = chunk;
                 });
         EntropyData.persist(events);
+    }
+
+    private byte[] fixedEntropyChunk(byte seed) {
+        byte[] chunk = new byte[GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES];
+        for (int i = 0; i < chunk.length; i++) {
+            chunk[i] = (byte) (seed + i);
+        }
+        return chunk;
     }
 
     private Sp80022TestService sp80022Success() {

@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS entropy_data (
     rpi_timestamp_us  BIGINT,                           -- Gateway ingestion timestamp in microseconds since epoch.
     tdc_timestamp_ps  BIGINT,                           -- Raw TDC timestamp in picoseconds (original precision).
     channel           INTEGER,                          -- TDC input channel that detected the decay event.
-    whitened_entropy  BYTEA,                            -- XOR-folded byte array derived from TDC and RPI timestamps.
+    whitened_entropy  BYTEA,                            -- Gateway-provided 32-byte per-event whitened_entropy (SHA-256 output).
     sequence          BIGINT        NOT NULL,           -- Monotonically increasing sequence number (gap detection).
     server_received   TIMESTAMPTZ   NOT NULL DEFAULT NOW(), -- Server-side reception timestamp (hypertable partition key).
     network_delay_ms  BIGINT,                           -- Estimated delay from edge gateway ingestion to cloud server reception, in milliseconds.

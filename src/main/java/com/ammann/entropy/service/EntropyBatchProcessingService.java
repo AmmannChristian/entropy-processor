@@ -7,12 +7,20 @@ import com.ammann.entropy.grpc.proto.EdgeMetrics;
 import com.ammann.entropy.grpc.proto.EntropyBatch;
 import com.ammann.entropy.grpc.proto.TDCEvent;
 import com.ammann.entropy.model.EntropyData;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -29,6 +37,12 @@ public class EntropyBatchProcessingService
     private static final Logger LOG = Logger.getLogger(EntropyBatchProcessingService.class);
 
     private GrpcMappingService protoConverter;
+
+    @ConfigProperty(name = "entropy.processor.grpc.whitened-audit-enabled", defaultValue = "false")
+    boolean whitenedAuditEnabled;
+
+    @Inject
+    MeterRegistry meterRegistry;
 
     @Inject
     public EntropyBatchProcessingService(GrpcMappingService protoConverter){
@@ -56,21 +70,100 @@ public class EntropyBatchProcessingService
             TDCEvent protoEvent = protoEvents.get(i);
 
             // Validate proto before conversion
-            if (!protoConverter.isValidProto(protoEvent)) {
-                LOG.warnf("Invalid TDCEvent in batch %d at index %d - skipping",
-                        protoBatch.getBatchSequence(), i);
+            String validationError = protoConverter.getValidationError(protoEvent);
+            if (validationError != null) {
+                LOG.warnf("Invalid TDCEvent in batch %d at index %d - skipping (reason=%s)",
+                        protoBatch.getBatchSequence(), i, validationError);
+                recordRejectedEvent(validationError);
                 continue;
             }
 
             long sequence = baseSequence + i;
             EntropyData entity = protoConverter.toEntity(protoEvent, sequence, serverReceived, batchId, sourceId);
             entities.add(entity);
+            auditWhitenedEntropyIfEnabled(protoBatch.getBatchSequence(), i, protoEvent, entity);
         }
 
         LOG.debugf("Converted batch %d: %d proto events -> %d entities",
                 protoBatch.getBatchSequence(), protoEvents.size(), entities.size());
 
         return entities;
+    }
+
+    private void recordRejectedEvent(String validationError)
+    {
+        if (meterRegistry == null) {
+            return;
+        }
+
+        Counter.builder("grpc_events_rejected_total")
+                .description("Total number of rejected gRPC TDC events by validation reason")
+                .tag("reason", reasonTag(validationError))
+                .register(meterRegistry)
+                .increment();
+    }
+
+    private String reasonTag(String validationError)
+    {
+        if (validationError.contains("whitened_entropy")) {
+            return "whitened_entropy";
+        }
+        if (validationError.contains("rpi_timestamp_us")) {
+            return "rpi_timestamp_us";
+        }
+        if (validationError.contains("tdc_timestamp_ps")) {
+            return "tdc_timestamp_ps";
+        }
+        if (validationError.contains("future") || validationError.contains("old")) {
+            return "time_skew";
+        }
+        return "other";
+    }
+
+    private void auditWhitenedEntropyIfEnabled(
+            long batchSequence,
+            int eventIndex,
+            TDCEvent protoEvent,
+            EntropyData entity)
+    {
+        if (!whitenedAuditEnabled) {
+            return;
+        }
+
+        byte[] inbound = entity.whitenedEntropy;
+        if (inbound == null || inbound.length != GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES) {
+            return;
+        }
+
+        byte[] recomputed = recomputeGatewayPerEventWhitening(protoEvent.getTdcTimestampPs());
+        if (!Arrays.equals(inbound, recomputed)) {
+            LOG.warnf(
+                    "Whitened entropy audit mismatch: batch=%d index=%d sequence=%d tdc_timestamp_ps=%d",
+                    batchSequence,
+                    eventIndex,
+                    entity.sequenceNumber,
+                    protoEvent.getTdcTimestampPs());
+        }
+    }
+
+    private byte[] recomputeGatewayPerEventWhitening(long tdcTimestampPs)
+    {
+        byte[] canonical = ByteBuffer
+                .allocate(Long.BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putLong(tdcTimestampPs)
+                .array();
+
+        byte[] stageOne = new byte[canonical.length - 1];
+        for (int i = 0; i < stageOne.length; i++) {
+            stageOne[i] = (byte) (canonical[i] ^ canonical[i + 1]);
+        }
+
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(stageOne);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
     }
 
     /**

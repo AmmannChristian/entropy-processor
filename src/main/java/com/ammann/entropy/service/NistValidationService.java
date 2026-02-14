@@ -30,7 +30,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.io.ByteArrayOutputStream;
-import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -635,58 +634,40 @@ public class NistValidationService
     /**
      * Extracts whitened entropy bits from EntropyData events.
      * <p>
-     * Prefer stored whitened_entropy bytes; falls back to interval-based whitening
-     * when no pre-whitened data exists.
+     * Uses stored inbound whitened_entropy bytes as the only source of truth.
+     * Each event must contain exactly 32 bytes produced at the gateway.
      *
      * @param events List of EntropyData events
      * @return Byte array containing whitened random bits
      */
     private byte[] extractWhitenedBits(List<EntropyData> events)
     {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream(events.size() * 8);
-        boolean hasWhitened = false;
+        int expectedBytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(events.size() * expectedBytesPerEvent);
+        int storedChunkCount = 0;
 
         for (EntropyData event : events) {
-            if (event.whitenedEntropy != null && event.whitenedEntropy.length > 0) {
-                buffer.writeBytes(event.whitenedEntropy);
-                hasWhitened = true;
+            byte[] whitened = event.whitenedEntropy;
+            if (whitened == null || whitened.length == 0) {
+                throw new NistException(String.format(
+                        "Missing whitened_entropy for sequence %s; gateway must send %d-byte whitened_entropy per event",
+                        event.sequenceNumber,
+                        expectedBytesPerEvent));
             }
-        }
-
-        if (hasWhitened) {
-            byte[] bytes = buffer.toByteArray();
-            LOG.debugf("Using %d whitened entropy chunks from database", events.size());
-            return bytes;
-        }
-
-        // Fallback: derive bits from inter-event intervals
-        List<EntropyData> sortedEvents = events.stream()
-                .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
-                .toList();
-
-        List<Long> intervals = new ArrayList<>();
-        for (int i = 1; i < sortedEvents.size(); i++) {
-            long interval = sortedEvents.get(i).hwTimestampNs - sortedEvents.get(i - 1).hwTimestampNs;
-            if (interval > 0) {
-                intervals.add(interval);
+            if (whitened.length != expectedBytesPerEvent) {
+                throw new NistException(String.format(
+                        "Invalid whitened_entropy length=%d for sequence %s; expected %d bytes",
+                        whitened.length,
+                        event.sequenceNumber,
+                        expectedBytesPerEvent));
             }
+            buffer.writeBytes(whitened);
+            storedChunkCount++;
         }
 
-        ByteBuffer intervalBuffer = ByteBuffer.allocate(intervals.size() * Long.BYTES);
-        intervals.forEach(intervalBuffer::putLong);
-        byte[] rawBytes = intervalBuffer.array();
-
-        if (rawBytes.length < 2) {
-            return rawBytes;
-        }
-
-        byte[] whitened = new byte[rawBytes.length / 2];
-        for (int i = 0; i < whitened.length; i++) {
-            whitened[i] = (byte) (rawBytes[i] ^ rawBytes[i + whitened.length]);
-        }
-
-        LOG.debugf("Whitened %d intervals into %d bytes (fallback)", intervals.size(), whitened.length);
-        return whitened;
+        byte[] bytes = buffer.toByteArray();
+        LOG.debugf("Using %d whitened entropy chunks from database (%d bytes)", storedChunkCount, bytes.length);
+        return bytes;
     }
 
     /**

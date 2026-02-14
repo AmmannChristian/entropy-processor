@@ -3,20 +3,28 @@ package com.ammann.entropy.service;
 import com.ammann.entropy.grpc.proto.TDCEvent;
 import com.ammann.entropy.model.EntropyData;
 import jakarta.enterprise.context.ApplicationScoped;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
-import java.nio.ByteBuffer;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Service for mapping between gRPC protobuf messages and JPA entities.
  *
  * <p>Converts {@code TDCEvent} protobuf messages to {@link EntropyData} entities,
  * performing unit conversions (picoseconds to nanoseconds, microseconds to ISO-8601),
- * network delay calculation, and lightweight whitened entropy derivation.
+ * and network delay calculation.
  */
 @ApplicationScoped
 public class GrpcMappingService
 {
+    static final int EXPECTED_WHITENED_ENTROPY_BYTES = 32;
+    private static final Logger LOG = Logger.getLogger(GrpcMappingService.class);
+    private static final AtomicBoolean COMPAT_MODE_LOGGED = new AtomicBoolean(false);
+
+    @ConfigProperty(name = "entropy.processor.grpc.allow-missing-whitened-entropy", defaultValue = "false")
+    boolean allowMissingWhitenedEntropy;
 
     /**
      * Converts a gRPC TDCEvent protobuf message to a JPA EntropyData entity.
@@ -41,7 +49,8 @@ public class GrpcMappingService
         entity.channel = proto.getChannel();
         entity.rpiTimestampUs = proto.getRpiTimestampUs();
         entity.tdcTimestampPs = proto.getTdcTimestampPs();
-        entity.whitenedEntropy = deriveWhitenedEntropy(proto);
+        byte[] whitened = proto.getWhitenedEntropy().toByteArray();
+        entity.whitenedEntropy = whitened.length == 0 ? null : whitened;
 
         // Convert gateway ingestion timestamp (microseconds) to ISO-8601 string
         if (proto.getRpiTimestampUs() > 0) {
@@ -69,36 +78,45 @@ public class GrpcMappingService
     }
 
     /**
-     * Creates a lightweight whitened byte array based on timestamp data.
-     * This is a simple reversible folding intended for downstream NIST tests.
-     */
-    private byte[] deriveWhitenedEntropy(TDCEvent proto) {
-        // Combine TDC and RPI timestamps to build a pseudo-random byte source
-        byte[] buffer = ByteBuffer.allocate(16)
-                .putLong(proto.getTdcTimestampPs())
-                .putLong(proto.getRpiTimestampUs())
-                .array();
-
-        byte[] whitened = new byte[buffer.length / 2];
-        for (int i = 0; i < whitened.length; i++) {
-            whitened[i] = (byte) (buffer[i] ^ buffer[i + whitened.length]);
-        }
-        return whitened;
-    }
-
-    /**
      * Validates that a TDCEvent proto message has valid data.
      *
      * @param proto TDCEvent to validate
      * @return true if valid, false otherwise
      */
     public boolean isValidProto(TDCEvent proto) {
+        return getValidationError(proto) == null;
+    }
+
+    /**
+     * Returns a human-readable validation error or null when the proto is valid.
+     *
+     * <p>Compatibility mode may allow missing whitened entropy for temporary
+     * migrations from older gateways.
+     */
+    public String getValidationError(TDCEvent proto) {
         // Check required fields
         if (proto.getRpiTimestampUs() <= 0) {
-            return false;
+            return "missing/invalid rpi_timestamp_us";
         }
         if (proto.getTdcTimestampPs() <= 0) {
-            return false;
+            return "missing/invalid tdc_timestamp_ps";
+        }
+        if (proto.getWhitenedEntropy().isEmpty() && !allowMissingWhitenedEntropy) {
+            return "missing whitened_entropy (strict mode)";
+        }
+        if (proto.getWhitenedEntropy().size() != EXPECTED_WHITENED_ENTROPY_BYTES) {
+            if (proto.getWhitenedEntropy().isEmpty() && allowMissingWhitenedEntropy) {
+                if (COMPAT_MODE_LOGGED.compareAndSet(false, true)) {
+                    LOG.warnf(
+                            "Compatibility mode enabled: accepting events without whitened_entropy; "
+                                    + "disable via entropy.processor.grpc.allow-missing-whitened-entropy=false after gateway rollout");
+                }
+            } else {
+                return String.format(
+                        "invalid whitened_entropy size=%d (expected %d)",
+                        proto.getWhitenedEntropy().size(),
+                        EXPECTED_WHITENED_ENTROPY_BYTES);
+            }
         }
 
         // Temporal validation - not too far in future/past
@@ -107,12 +125,17 @@ public class GrpcMappingService
         long rpiTimestampUs = proto.getRpiTimestampUs();
 
         if (rpiTimestampUs > nowUs + maxSkewUs) {
-            return false;
+            return "rpi_timestamp_us too far in future";
         }
         if (rpiTimestampUs < nowUs - (24 * 60 * 60 * 1_000_000L)) {
-            return false;
+            return "rpi_timestamp_us too old";
         }
 
-        return true;
+        return null;
+    }
+
+    void setAllowMissingWhitenedEntropyForTesting(boolean allow)
+    {
+        this.allowMissingWhitenedEntropy = allow;
     }
 }
