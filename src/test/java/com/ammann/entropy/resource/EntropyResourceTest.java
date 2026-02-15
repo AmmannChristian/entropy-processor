@@ -22,6 +22,7 @@ import com.ammann.entropy.support.TestDataFactory;
 import io.quarkus.hibernate.orm.panache.Panache;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.ws.rs.core.SecurityContext;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -90,7 +91,8 @@ class EntropyResourceTest {
         resource.entropyStatisticsService =
                 new EntropyStatisticsService() {
                     @Override
-                    public EntropyAnalysisResult calculateAllEntropies(List<Long> intervalsNs, int bucketSizeNs) {
+                    public EntropyAnalysisResult calculateAllEntropies(
+                            List<Long> intervalsNs, int bucketSizeNs) {
                         var stats =
                                 new BasicStatistics(
                                         intervalsNs.size(),
@@ -170,12 +172,18 @@ class EntropyResourceTest {
     @Test
     void triggerNistValidationReturnsServiceUnavailableWhenNoData() {
         EntropyResource resource = buildResource();
-        when(resource.nistValidationService.validateTimeWindow(any(), any(), any()))
+        when(resource.nistValidationService.startAsyncSp80022Validation(any(), any(), any(), any()))
                 .thenThrow(new NistException("No entropy data"));
+
+        SecurityContext securityContext = mock(SecurityContext.class);
+        when(securityContext.getUserPrincipal()).thenReturn(null);
 
         var response =
                 resource.triggerNISTValidation(
-                        "2024-01-01T00:00:00Z", "2024-01-01T00:01:00Z", "Bearer token");
+                        "2024-01-01T00:00:00Z",
+                        "2024-01-01T00:01:00Z",
+                        "Bearer token",
+                        securityContext);
 
         assertThat(response.getStatus()).isEqualTo(503);
         assertThat(response.getEntity()).isInstanceOf(ErrorResponseDTO.class);

@@ -10,6 +10,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +20,8 @@ class NistValidationServiceHourlyTest {
     void runHourlyValidationDoesNotIncrementFailuresOnPass() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         TestableNistValidationService service =
-                new TestableNistValidationService(registry, this::passingResult, null, this::passing90bResult, null);
+                new TestableNistValidationService(
+                        registry, this::passingResult, null, this::passing90bResult, null);
 
         service.runHourlyNISTValidation();
 
@@ -32,7 +34,8 @@ class NistValidationServiceHourlyTest {
     void runHourlyValidationDoesNotIncrementFailuresOnFailResult() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         TestableNistValidationService service =
-                new TestableNistValidationService(registry, this::failingResult, null, this::passing90bResult, null);
+                new TestableNistValidationService(
+                        registry, this::failingResult, null, this::passing90bResult, null);
 
         service.runHourlyNISTValidation();
 
@@ -46,7 +49,8 @@ class NistValidationServiceHourlyTest {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         RuntimeException boom = new RuntimeException("boom");
         TestableNistValidationService service =
-                new TestableNistValidationService(registry, null, boom, this::passing90bResult, null);
+                new TestableNistValidationService(
+                        registry, null, boom, this::passing90bResult, null);
 
         service.runHourlyNISTValidation();
 
@@ -59,7 +63,8 @@ class NistValidationServiceHourlyTest {
     void runWeeklyValidationTriggersOnly90b() {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         TestableNistValidationService service =
-                new TestableNistValidationService(registry, this::passingResult, null, this::passing90bResult, null);
+                new TestableNistValidationService(
+                        registry, this::passingResult, null, this::passing90bResult, null);
 
         service.runWeeklyNIST90BValidation();
 
@@ -150,21 +155,25 @@ class NistValidationServiceHourlyTest {
         }
 
         @Override
-        public NISTSuiteResultDTO validateTimeWindow(Instant start, Instant end) {
+        public UUID startAsyncSp80022Validation(
+                Instant start, Instant end, String bearerToken, String username) {
             sp80022CallCount++;
             if (sp80022Failure != null) {
                 throw sp80022Failure;
             }
-            return sp80022Supplier.get();
+            // Return a dummy UUID since we're not actually creating a job
+            return UUID.randomUUID();
         }
 
         @Override
-        public NIST90BResultDTO validate90BTimeWindow(Instant start, Instant end) {
+        public UUID startAsyncSp80090bValidation(
+                Instant start, Instant end, String bearerToken, String username) {
             sp80090bCallCount++;
             if (sp80090bFailure != null) {
                 throw sp80090bFailure;
             }
-            return sp80090bSupplier.get();
+            // Return a dummy UUID since we're not actually creating a job
+            return UUID.randomUUID();
         }
     }
 }

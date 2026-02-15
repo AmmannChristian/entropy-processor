@@ -17,7 +17,6 @@ import com.ammann.entropy.model.Nist90BResult;
 import com.ammann.entropy.model.NistTestResult;
 import com.ammann.entropy.model.NistValidationJob;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.grpc.CallCredentials;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -26,7 +25,6 @@ import io.grpc.stub.MetadataUtils;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.grpc.GrpcClient;
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -44,7 +42,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -850,7 +847,7 @@ public class NistValidationService {
      */
     public Long countRecentFailures(int hours) {
         Instant since = Instant.now().minus(Duration.ofHours(hours));
-        return PanacheEntityBase.count("executedAt > ?1 AND passed = false", since);
+        return NistTestResult.count("executedAt > ?1 AND passed = false", since);
     }
 
     /**

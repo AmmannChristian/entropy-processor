@@ -6,6 +6,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.transaction.Transactional;
+import java.time.Instant;
 import org.jboss.logging.Logger;
 
 /**
@@ -34,20 +35,23 @@ public class NistJobRecoveryService {
     @Transactional
     void onStart(@Observes StartupEvent event) {
         LOG.info("NIST job recovery: checking for orphaned jobs...");
+        Instant now = Instant.now();
 
         long updatedQueued =
                 NistValidationJob.update(
                         "status = 'FAILED', "
                                 + "errorMessage = 'Server restarted before job could start', "
-                                + "completedAt = NOW() "
-                                + "WHERE status = 'QUEUED'");
+                                + "completedAt = ?1 "
+                                + "WHERE status = 'QUEUED'",
+                        now);
 
         long updatedRunning =
                 NistValidationJob.update(
                         "status = 'FAILED', "
                                 + "errorMessage = 'Server restarted during job processing', "
-                                + "completedAt = NOW() "
-                                + "WHERE status = 'RUNNING'");
+                                + "completedAt = ?1 "
+                                + "WHERE status = 'RUNNING'",
+                        now);
 
         long totalRecovered = updatedQueued + updatedRunning;
 

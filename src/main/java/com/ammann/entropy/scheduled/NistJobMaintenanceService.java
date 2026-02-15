@@ -49,14 +49,16 @@ public class NistJobMaintenanceService {
     @Scheduled(every = "10m", identity = "nist-job-watchdog")
     @Transactional
     public void detectStuckJobs() {
-        Instant threshold = Instant.now().minus(MAX_JOB_RUNTIME);
+        Instant now = Instant.now();
+        Instant threshold = now.minus(MAX_JOB_RUNTIME);
 
         long marked =
                 NistValidationJob.update(
                         "status = 'FAILED', "
                                 + "errorMessage = 'Job exceeded maximum runtime (30 minutes)', "
-                                + "completedAt = NOW() "
-                                + "WHERE status = 'RUNNING' AND startedAt < ?1",
+                                + "completedAt = ?1 "
+                                + "WHERE status = 'RUNNING' AND startedAt < ?2",
+                        now,
                         threshold);
 
         if (marked > 0) {
@@ -84,7 +86,7 @@ public class NistJobMaintenanceService {
      *   <li>Users can re-run validations if historical data is needed</li>
      * </ul>
      */
-    @Scheduled(cron = "0 0 2 * * SUN", identity = "nist-job-cleanup")
+    @Scheduled(cron = "0 0 2 ? * SUN", identity = "nist-job-cleanup")
     @Transactional
     public void cleanupOldJobs() {
         Instant cutoff = Instant.now().minus(JOB_RETENTION_PERIOD);

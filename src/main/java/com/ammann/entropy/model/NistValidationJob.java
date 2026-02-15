@@ -91,13 +91,9 @@ public class NistValidationJob extends PanacheEntityBase {
      */
     public static List<NistValidationJob> findRecent(int limit, String username) {
         if (username != null && !username.isBlank()) {
-            return find("createdBy = ?1 ORDER BY createdAt DESC", username)
-                    .page(0, limit)
-                    .list();
+            return find("createdBy = ?1 ORDER BY createdAt DESC", username).page(0, limit).list();
         }
-        return find("ORDER BY createdAt DESC")
-                .page(0, limit)
-                .list();
+        return find("ORDER BY createdAt DESC").page(0, limit).list();
     }
 
     /**
