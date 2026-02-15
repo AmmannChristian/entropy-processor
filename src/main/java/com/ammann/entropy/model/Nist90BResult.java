@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.model;
 
 import com.ammann.entropy.dto.NIST90BResultDTO;
@@ -7,12 +8,11 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import java.time.Duration;
+import java.time.Instant;
 import org.hibernate.annotations.ColumnTransformer;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
-
-import java.time.Duration;
-import java.time.Instant;
 
 /**
  * Persistent entity storing the result of a NIST SP 800-90B entropy assessment.
@@ -22,10 +22,16 @@ import java.time.Instant;
  * Markov, compression) are recorded alongside the overall min-entropy and pass status.
  */
 @Entity
-@Table(name = Nist90BResult.TABLE_NAME, indexes = {
-        @Index(name = "idx_90b_executed_at", columnList = "executed_at"),
-        @Index(name = "idx_90b_passed", columnList = "passed")
-})
+@Table(
+        name = Nist90BResult.TABLE_NAME,
+        indexes = {
+            @Index(name = "idx_90b_executed_at", columnList = "executed_at"),
+            @Index(name = "idx_90b_passed", columnList = "passed"),
+            @Index(name = "idx_90b_assessment_run", columnList = "assessment_run_id"),
+            @Index(
+                    name = "idx_90b_assessment_run_chunk",
+                    columnList = "assessment_run_id, chunk_index")
+        })
 public class Nist90BResult extends PanacheEntity {
 
     public static final String TABLE_NAME = "nist_90b_results";
@@ -33,6 +39,10 @@ public class Nist90BResult extends PanacheEntity {
     /** Batch identifier linking this result to the source entropy data. */
     @Column(name = "batch_id", length = 64)
     public String batchId;
+
+    /** Assessment run identifier grouping all chunks from a single validation job. */
+    @Column(name = "assessment_run_id")
+    public java.util.UUID assessmentRunId;
 
     /** Overall min-entropy estimate in bits per symbol (most conservative bound). */
     @Column(name = "min_entropy")
@@ -80,20 +90,28 @@ public class Nist90BResult extends PanacheEntity {
     @Column(name = "executed_at", nullable = false)
     public Instant executedAt = Instant.now();
 
-    public Nist90BResult() {
-    }
+    /** Index of this chunk within the assessment run (0-based, null for single-chunk runs). */
+    @Column(name = "chunk_index")
+    public Integer chunkIndex;
 
-    public Nist90BResult(String batchId,
-                         Double minEntropy,
-                         Double shannonEntropy,
-                         Double collisionEntropy,
-                         Double markovEntropy,
-                         Double compressionEntropy,
-                         boolean passed,
-                         String assessmentDetails,
-                         Long bitsTested,
-                         Instant windowStart,
-                         Instant windowEnd) {
+    /** Total number of chunks in the assessment run (null for single-chunk runs). */
+    @Column(name = "chunk_count")
+    public Integer chunkCount;
+
+    public Nist90BResult() {}
+
+    public Nist90BResult(
+            String batchId,
+            Double minEntropy,
+            Double shannonEntropy,
+            Double collisionEntropy,
+            Double markovEntropy,
+            Double compressionEntropy,
+            boolean passed,
+            String assessmentDetails,
+            Long bitsTested,
+            Instant windowStart,
+            Instant windowEnd) {
         this.batchId = batchId;
         this.minEntropy = minEntropy;
         this.shannonEntropy = shannonEntropy;
@@ -114,7 +132,9 @@ public class Nist90BResult extends PanacheEntity {
      * @return DTO representation with null-safe default values for missing estimates
      */
     public NIST90BResultDTO toDTO() {
-        TimeWindowDTO window = new TimeWindowDTO(windowStart, windowEnd, Duration.between(windowStart, windowEnd).toHours());
+        TimeWindowDTO window =
+                new TimeWindowDTO(
+                        windowStart, windowEnd, Duration.between(windowStart, windowEnd).toHours());
         return new NIST90BResultDTO(
                 minEntropy != null ? minEntropy : 0.0,
                 shannonEntropy != null ? shannonEntropy : 0.0,
@@ -125,7 +145,6 @@ public class Nist90BResult extends PanacheEntity {
                 assessmentDetails,
                 executedAt,
                 bitsTested != null ? bitsTested : 0L,
-                window
-        );
+                window);
     }
 }

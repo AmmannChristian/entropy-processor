@@ -1,11 +1,12 @@
 -- V1 -- Initial Schema for Entropy Processor
 --
--- Creates the four core tables used by the entropy-processor service:
+-- Creates the five core tables used by the entropy-processor service:
 --
---   1. entropy_data         -- Raw TDC decay events (TimescaleDB hypertable)
---   2. nist_test_results    -- NIST SP 800-22 statistical test outcomes
---   3. nist_90b_results     -- NIST SP 800-90B entropy assessment outcomes
---   4. data_quality_reports -- Periodic data-quality summary reports
+--   1. entropy_data           -- Raw TDC decay events (TimescaleDB hypertable)
+--   2. nist_test_results      -- NIST SP 800-22 statistical test outcomes
+--   3. nist_90b_results       -- NIST SP 800-90B entropy assessment outcomes
+--   4. data_quality_reports   -- Periodic data-quality summary reports
+--   5. nist_validation_jobs   -- Async job tracking for NIST validations
 --
 -- Tables 1-3 are converted to TimescaleDB hypertables for efficient
 -- time-range queries and automatic chunk-based retention management.
@@ -83,6 +84,8 @@ CREATE TABLE IF NOT EXISTS nist_test_results (
     window_end        TIMESTAMPTZ      NOT NULL,        -- End of the entropy data time window under test.
     executed_at       TIMESTAMPTZ      NOT NULL DEFAULT NOW(), -- Timestamp when this test was executed (partition key).
     details           JSONB,                            -- Additional test-specific output (e.g., sub-test statistics).
+    chunk_index       INTEGER,                          -- Which chunk within a run produced this result (0-based).
+    chunk_count       INTEGER,                          -- Total number of chunks in this test suite run.
 
     PRIMARY KEY (id, executed_at)
 );
@@ -97,6 +100,7 @@ SELECT create_hypertable('nist_test_results', 'executed_at',
 CREATE INDEX IF NOT EXISTS idx_test_suite_run ON nist_test_results(test_suite_run_id);
 CREATE INDEX IF NOT EXISTS idx_executed_at ON nist_test_results(executed_at);
 CREATE INDEX IF NOT EXISTS idx_passed ON nist_test_results(passed);
+CREATE INDEX IF NOT EXISTS idx_test_suite_run_chunk ON nist_test_results(test_suite_run_id, chunk_index);
 
 
 -- 3. nist_90b_results -- NIST SP 800-90B Entropy Assessment Results
@@ -109,6 +113,7 @@ CREATE SEQUENCE IF NOT EXISTS nist_90b_results_SEQ START WITH 1 INCREMENT BY 50;
 CREATE TABLE IF NOT EXISTS nist_90b_results (
     id                    BIGINT           NOT NULL DEFAULT nextval('nist_90b_results_SEQ'),
     batch_id              VARCHAR(64),                   -- Entropy batch that provided the input data.
+    assessment_run_id     UUID,                          -- Groups all chunks belonging to a single assessment run.
     min_entropy           DOUBLE PRECISION,              -- Min-entropy estimate in bits per sample.
     shannon_entropy       DOUBLE PRECISION,              -- Shannon entropy estimate in bits per sample.
     collision_entropy     DOUBLE PRECISION,              -- Collision entropy (Renyi order 2) in bits per sample.
@@ -120,6 +125,8 @@ CREATE TABLE IF NOT EXISTS nist_90b_results (
     window_end            TIMESTAMPTZ      NOT NULL,     -- End of the entropy data time window assessed.
     executed_at           TIMESTAMPTZ      NOT NULL DEFAULT NOW(), -- Assessment execution timestamp (partition key).
     assessment_details    JSONB,                         -- Full estimator-level output from the 90B service.
+    chunk_index           INTEGER,                       -- Which chunk within a run produced this result (0-based).
+    chunk_count           INTEGER,                       -- Total number of chunks in this assessment run.
 
     PRIMARY KEY (id, executed_at)
 );
@@ -131,6 +138,8 @@ SELECT create_hypertable('nist_90b_results', 'executed_at',
 
 CREATE INDEX IF NOT EXISTS idx_90b_executed_at ON nist_90b_results(executed_at);
 CREATE INDEX IF NOT EXISTS idx_90b_passed ON nist_90b_results(passed);
+CREATE INDEX IF NOT EXISTS idx_90b_assessment_run ON nist_90b_results(assessment_run_id);
+CREATE INDEX IF NOT EXISTS idx_90b_assessment_run_chunk ON nist_90b_results(assessment_run_id, chunk_index);
 
 
 -- 4. data_quality_reports -- Periodic Quality Assessment Summaries
@@ -161,3 +170,59 @@ CREATE TABLE IF NOT EXISTS data_quality_reports (
 CREATE INDEX IF NOT EXISTS idx_report_timestamp ON data_quality_reports(report_timestamp);
 CREATE INDEX IF NOT EXISTS idx_quality_score ON data_quality_reports(overall_quality_score);
 CREATE INDEX IF NOT EXISTS idx_window_start ON data_quality_reports(window_start);
+
+
+-- 5. nist_validation_jobs -- Async Job Tracking for NIST Validations
+-- Tracks async NIST validation jobs (both SP 800-22 and SP 800-90B) with progress.
+-- Enables async/polling pattern for long-running validations that exceed HTTP timeouts.
+--
+-- Each job represents a single validation request from the frontend. Jobs can be in
+-- one of four states: QUEUED (created but not started), RUNNING (actively processing),
+-- COMPLETED (finished successfully), or FAILED (encountered an error).
+--
+-- The validation_type column distinguishes between SP 800-22 statistical tests
+-- and SP 800-90B entropy assessments, allowing both to share the same job infrastructure.
+
+CREATE SEQUENCE IF NOT EXISTS nist_validation_jobs_SEQ START WITH 1 INCREMENT BY 50;
+
+CREATE TABLE IF NOT EXISTS nist_validation_jobs (
+    id                  UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    validation_type     VARCHAR(20)      NOT NULL,        -- 'SP_800_22' or 'SP_800_90B'.
+    status              VARCHAR(20)      NOT NULL,        -- 'QUEUED', 'RUNNING', 'COMPLETED', 'FAILED'.
+    progress_percent    INTEGER          DEFAULT 0,       -- Progress percentage (0-100).
+    current_chunk       INTEGER          DEFAULT 0,       -- Current chunk being processed (0-based).
+    total_chunks        INTEGER,                          -- Total number of chunks to process.
+    window_start        TIMESTAMPTZ      NOT NULL,        -- Start of the entropy data time window.
+    window_end          TIMESTAMPTZ      NOT NULL,        -- End of the entropy data time window.
+    test_suite_run_id   UUID,                             -- Links to nist_test_results.test_suite_run_id (SP 800-22).
+    assessment_run_id   UUID,                             -- Links to nist_90b_results.assessment_run_id (SP 800-90B).
+    created_at          TIMESTAMPTZ      NOT NULL DEFAULT NOW(), -- Job creation timestamp.
+    started_at          TIMESTAMPTZ,                      -- When processing started (status → RUNNING).
+    completed_at        TIMESTAMPTZ,                      -- When processing finished (status → COMPLETED/FAILED).
+    error_message       TEXT,                             -- Error details if status = FAILED.
+    created_by          VARCHAR(255),                     -- Username of user who triggered the validation.
+
+    CONSTRAINT valid_validation_type CHECK (validation_type IN ('SP_800_22', 'SP_800_90B')),
+    CONSTRAINT valid_status CHECK (status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')),
+    CONSTRAINT valid_progress CHECK (progress_percent >= 0 AND progress_percent <= 100)
+);
+
+-- Indexes for efficient job queries.
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON nist_validation_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_validation_type ON nist_validation_jobs(validation_type);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON nist_validation_jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_by ON nist_validation_jobs(created_by);
+CREATE INDEX IF NOT EXISTS idx_jobs_test_suite_run_id ON nist_validation_jobs(test_suite_run_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_assessment_run_id ON nist_validation_jobs(assessment_run_id);
+
+-- Composite index for user dashboard queries (recent jobs by user).
+CREATE INDEX IF NOT EXISTS idx_jobs_user_recent ON nist_validation_jobs(created_by, created_at DESC);
+
+COMMENT ON TABLE nist_validation_jobs IS 'Tracks async NIST validation jobs (SP 800-22 and SP 800-90B) with progress';
+COMMENT ON COLUMN nist_validation_jobs.validation_type IS 'Type of validation: SP_800_22 (randomness tests) or SP_800_90B (entropy assessment)';
+COMMENT ON COLUMN nist_validation_jobs.status IS 'Job status: QUEUED (waiting), RUNNING (processing), COMPLETED (success), FAILED (error)';
+COMMENT ON COLUMN nist_validation_jobs.progress_percent IS 'Progress percentage (0-100), updated after each chunk';
+COMMENT ON COLUMN nist_validation_jobs.current_chunk IS 'Current chunk being processed (0-based index)';
+COMMENT ON COLUMN nist_validation_jobs.total_chunks IS 'Total number of chunks to process (determined at job start)';
+COMMENT ON COLUMN nist_validation_jobs.test_suite_run_id IS 'Links to nist_test_results.test_suite_run_id for SP 800-22 jobs';
+COMMENT ON COLUMN nist_validation_jobs.assessment_run_id IS 'Links to nist_90b_results.assessment_run_id for SP 800-90B jobs';

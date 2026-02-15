@@ -74,9 +74,10 @@ class PublicEventsResourceTest {
 
     @Test
     void publicEventSummaryContainsOnlySafeFields() {
-        List<String> fieldNames = Arrays.stream(PublicEventSummaryDTO.class.getRecordComponents())
-                .map(RecordComponent::getName)
-                .toList();
+        List<String> fieldNames =
+                Arrays.stream(PublicEventSummaryDTO.class.getRecordComponents())
+                        .map(RecordComponent::getName)
+                        .toList();
 
         assertThat(fieldNames).containsExactly("id", "sequenceNumber", "serverReceived");
     }

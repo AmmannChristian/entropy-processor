@@ -156,13 +156,10 @@ class NistValidationServiceTest {
         assertThat(dto.failedTests()).isZero();
         assertThat(NistTestResult.count()).isEqualTo(10L);
         List<NistTestResult> persisted = NistTestResult.findAll().list();
-        assertThat(persisted)
-                .extracting(result -> result.chunkCount)
-                .containsOnly(5);
-        assertThat(persisted)
-                .extracting(result -> result.chunkIndex)
-                .contains(1, 2, 3, 4, 5);
-        assertThat(persisted.stream().map(result -> result.testSuiteRunId).distinct().count()).isEqualTo(1);
+        assertThat(persisted).extracting(result -> result.chunkCount).containsOnly(5);
+        assertThat(persisted).extracting(result -> result.chunkIndex).contains(1, 2, 3, 4, 5);
+        assertThat(persisted.stream().map(result -> result.testSuiteRunId).distinct().count())
+                .isEqualTo(1);
     }
 
     @Test
@@ -270,7 +267,8 @@ class NistValidationServiceTest {
 
         for (int chunk = 1; chunk <= 2; chunk++) {
             for (String testName : testNames) {
-                NistTestResult result = new NistTestResult(runId, testName, true, 0.5 + chunk * 0.1, start, end);
+                NistTestResult result =
+                        new NistTestResult(runId, testName, true, 0.5 + chunk * 0.1, start, end);
                 result.chunkIndex = chunk;
                 result.chunkCount = 2;
                 result.bitsTested = 1000000L;
@@ -310,7 +308,8 @@ class NistValidationServiceTest {
         for (int chunk = 1; chunk <= 2; chunk++) {
             for (String testName : testNames) {
                 boolean passed = !(chunk == 1 && testName.equals("runs"));
-                NistTestResult result = new NistTestResult(runId, testName, passed, 0.5, start, end);
+                NistTestResult result =
+                        new NistTestResult(runId, testName, passed, 0.5, start, end);
                 result.chunkIndex = chunk;
                 result.chunkCount = 2;
                 result.bitsTested = 1000000L;
@@ -324,18 +323,19 @@ class NistValidationServiceTest {
         assertThat(dto.totalTests()).isEqualTo(15);
         assertThat(dto.passedTests()).isEqualTo(14);
         assertThat(dto.failedTests()).isEqualTo(1);
-        assertThat(dto.overallPassRate()).isCloseTo(14.0 / 15.0, org.assertj.core.data.Offset.offset(0.01));
+        assertThat(dto.overallPassRate())
+                .isCloseTo(14.0 / 15.0, org.assertj.core.data.Offset.offset(0.01));
 
         // Verify "runs" test failed (because one chunk failed)
         assertThat(dto.tests())
-            .filteredOn(test -> test.testName().equals("runs"))
-            .hasSize(1)
-            .allMatch(test -> !test.passed());
+                .filteredOn(test -> test.testName().equals("runs"))
+                .hasSize(1)
+                .allMatch(test -> !test.passed());
 
         // Verify other tests passed
         assertThat(dto.tests())
-            .filteredOn(test -> !test.testName().equals("runs"))
-            .allMatch(test -> test.passed());
+                .filteredOn(test -> !test.testName().equals("runs"))
+                .allMatch(test -> test.passed());
     }
 
     @Test
@@ -347,13 +347,15 @@ class NistValidationServiceTest {
         Instant end = Instant.now();
 
         // Create 2 chunks with different p-values for "frequency_monobit"
-        NistTestResult chunk1 = new NistTestResult(runId, "frequency_monobit", true, 0.5, start, end);
+        NistTestResult chunk1 =
+                new NistTestResult(runId, "frequency_monobit", true, 0.5, start, end);
         chunk1.chunkIndex = 1;
         chunk1.chunkCount = 2;
         chunk1.bitsTested = 1000000L;
         chunk1.persist();
 
-        NistTestResult chunk2 = new NistTestResult(runId, "frequency_monobit", true, 0.2, start, end);
+        NistTestResult chunk2 =
+                new NistTestResult(runId, "frequency_monobit", true, 0.2, start, end);
         chunk2.chunkIndex = 2;
         chunk2.chunkCount = 2;
         chunk2.bitsTested = 1000000L;
@@ -366,7 +368,8 @@ class NistValidationServiceTest {
 
         // Verify aggregated result has minimum p-value (0.2)
         assertThat(dto.tests()).hasSize(1);
-        assertThat(dto.tests().get(0).pValue()).isCloseTo(0.2, org.assertj.core.data.Offset.offset(0.001));
+        assertThat(dto.tests().get(0).pValue())
+                .isCloseTo(0.2, org.assertj.core.data.Offset.offset(0.001));
         assertThat(dto.tests().get(0).passed()).isTrue();
     }
 
@@ -380,7 +383,8 @@ class NistValidationServiceTest {
 
         // Create 3 chunks with bitsTested=1000000 each
         for (int chunk = 1; chunk <= 3; chunk++) {
-            NistTestResult result = new NistTestResult(runId, "frequency_monobit", true, 0.5, start, end);
+            NistTestResult result =
+                    new NistTestResult(runId, "frequency_monobit", true, 0.5, start, end);
             result.chunkIndex = chunk;
             result.chunkCount = 3;
             result.bitsTested = 1000000L;
@@ -415,7 +419,8 @@ class NistValidationServiceTest {
         byte[] bytes = invokeExtractWhitenedBits(List.of(a, b));
         byte[] expected = new byte[2 * GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES];
         System.arraycopy(a.whitenedEntropy, 0, expected, 0, a.whitenedEntropy.length);
-        System.arraycopy(b.whitenedEntropy, 0, expected, a.whitenedEntropy.length, b.whitenedEntropy.length);
+        System.arraycopy(
+                b.whitenedEntropy, 0, expected, a.whitenedEntropy.length, b.whitenedEntropy.length);
 
         assertThat(bytes.length).isEqualTo(expected.length);
         assertThat(bytes).containsExactly(expected);
@@ -424,7 +429,8 @@ class NistValidationServiceTest {
     @Test
     void resolveTokenReturnsBearerTokenWhenPresent() throws Exception {
         OidcClientService oidcClientService = org.mockito.Mockito.mock(OidcClientService.class);
-        NistValidationService localService = new NistValidationService(null, null, oidcClientService);
+        NistValidationService localService =
+                new NistValidationService(null, null, oidcClientService);
 
         String token = invokeResolveToken(localService, "bearer-123", "NIST SP 800-22");
 
@@ -435,7 +441,8 @@ class NistValidationServiceTest {
     @Test
     void resolveTokenUsesOidcClientServiceWhenConfigured() throws Exception {
         OidcClientService oidcClientService = org.mockito.Mockito.mock(OidcClientService.class);
-        NistValidationService localService = new NistValidationService(null, null, oidcClientService);
+        NistValidationService localService =
+                new NistValidationService(null, null, oidcClientService);
         when(oidcClientService.isConfigured()).thenReturn(true);
         when(oidcClientService.getAccessTokenOrThrow()).thenReturn("svc-token");
 
@@ -448,7 +455,8 @@ class NistValidationServiceTest {
     @Test
     void resolveTokenReturnsNullWhenNotConfigured() throws Exception {
         OidcClientService oidcClientService = org.mockito.Mockito.mock(OidcClientService.class);
-        NistValidationService localService = new NistValidationService(null, null, oidcClientService);
+        NistValidationService localService =
+                new NistValidationService(null, null, oidcClientService);
         when(oidcClientService.isConfigured()).thenReturn(false);
 
         String token = invokeResolveToken(localService, null, "NIST SP 800-22");
@@ -460,7 +468,8 @@ class NistValidationServiceTest {
     @Test
     void resolveTokenThrowsWhenTokenFetchFails() throws Exception {
         OidcClientService oidcClientService = org.mockito.Mockito.mock(OidcClientService.class);
-        NistValidationService localService = new NistValidationService(null, null, oidcClientService);
+        NistValidationService localService =
+                new NistValidationService(null, null, oidcClientService);
         when(oidcClientService.isConfigured()).thenReturn(true);
         when(oidcClientService.getAccessTokenOrThrow())
                 .thenThrow(new OidcClientService.TokenFetchException("boom"));
@@ -493,7 +502,8 @@ class NistValidationServiceTest {
 
     @Test
     void ensureJsonDocumentPreservesValidJson() throws Exception {
-        String json = invokeEnsureJsonDocument(service, "{\"warning\":\"already-json\"}", "warning");
+        String json =
+                invokeEnsureJsonDocument(service, "{\"warning\":\"already-json\"}", "warning");
 
         assertThat(json).isEqualTo("{\"warning\":\"already-json\"}");
     }
@@ -522,7 +532,8 @@ class NistValidationServiceTest {
     private String invokeResolveToken(
             NistValidationService target, String bearerToken, String serviceName) throws Exception {
         Method method =
-                NistValidationService.class.getDeclaredMethod("resolveToken", String.class, String.class);
+                NistValidationService.class.getDeclaredMethod(
+                        "resolveToken", String.class, String.class);
         method.setAccessible(true);
         try {
             return (String) method.invoke(target, bearerToken, serviceName);
@@ -537,14 +548,16 @@ class NistValidationServiceTest {
     private String invokeEnsureJsonDocument(
             NistValidationService target, String rawValue, String fallbackField) throws Exception {
         Method method =
-                NistValidationService.class.getDeclaredMethod("ensureJsonDocument", String.class, String.class);
+                NistValidationService.class.getDeclaredMethod(
+                        "ensureJsonDocument", String.class, String.class);
         method.setAccessible(true);
         return (String) method.invoke(target, rawValue, fallbackField);
     }
 
     @SuppressWarnings("unchecked")
     private List<byte[]> invokeSplitSp80022Chunks(byte[] bitstream) throws Exception {
-        Method method = NistValidationService.class.getDeclaredMethod("splitSp80022Chunks", byte[].class);
+        Method method =
+                NistValidationService.class.getDeclaredMethod("splitSp80022Chunks", byte[].class);
         method.setAccessible(true);
         NistValidationService target = ClientProxy.unwrap(service);
         return (List<byte[]>) method.invoke(target, bitstream);

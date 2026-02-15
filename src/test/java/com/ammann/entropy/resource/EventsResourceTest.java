@@ -15,10 +15,10 @@ import com.ammann.entropy.model.EntropyData;
 import com.ammann.entropy.service.DataQualityService;
 import com.ammann.entropy.service.EntropyStatisticsService;
 import com.ammann.entropy.support.TestDataFactory;
-import jakarta.annotation.security.PermitAll;
-import jakarta.annotation.security.RolesAllowed;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.annotation.security.PermitAll;
+import jakarta.annotation.security.RolesAllowed;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -263,7 +263,9 @@ class EventsResourceTest {
         List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
         EntropyData.persist(events);
 
-        var response = resource.getIntervalHistogram(start.toString(), start.plusSeconds(10).toString(), 100);
+        var response =
+                resource.getIntervalHistogram(
+                        start.toString(), start.plusSeconds(10).toString(), 100);
         IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
 
         assertThat(dto.totalIntervals()).isEqualTo(149L); // 150 events = 149 intervals
@@ -318,7 +320,9 @@ class EventsResourceTest {
         List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
         EntropyData.persist(events);
 
-        var response = resource.getIntervalHistogram(start.toString(), start.plusSeconds(10).toString(), 100);
+        var response =
+                resource.getIntervalHistogram(
+                        start.toString(), start.plusSeconds(10).toString(), 100);
         IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
 
         // Verify default bucket size is used when not specified
@@ -335,7 +339,9 @@ class EventsResourceTest {
         List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
         EntropyData.persist(events);
 
-        var response = resource.getIntervalHistogram(start.toString(), start.plusSeconds(10).toString(), 500);
+        var response =
+                resource.getIntervalHistogram(
+                        start.toString(), start.plusSeconds(10).toString(), 500);
         IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
 
         assertThat(dto.bucketSizeNs()).isEqualTo(500);

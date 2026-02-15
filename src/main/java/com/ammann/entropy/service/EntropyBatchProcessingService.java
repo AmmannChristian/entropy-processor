@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.service;
 
 import com.ammann.entropy.dto.BatchProcessingResultDTO;
@@ -11,9 +12,6 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
@@ -22,6 +20,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 /**
  * Service responsible for converting gRPC {@code EntropyBatch} messages into JPA entities,
@@ -31,8 +31,7 @@ import java.util.List;
  * <p>Acts as the bridge between the gRPC data plane and the persistence layer.
  */
 @ApplicationScoped
-public class EntropyBatchProcessingService
-{
+public class EntropyBatchProcessingService {
 
     private static final Logger LOG = Logger.getLogger(EntropyBatchProcessingService.class);
 
@@ -41,29 +40,29 @@ public class EntropyBatchProcessingService
     @ConfigProperty(name = "entropy.processor.grpc.whitened-audit-enabled", defaultValue = "false")
     boolean whitenedAuditEnabled;
 
-    @Inject
-    MeterRegistry meterRegistry;
+    @Inject MeterRegistry meterRegistry;
 
     @Inject
-    public EntropyBatchProcessingService(GrpcMappingService protoConverter){
+    public EntropyBatchProcessingService(GrpcMappingService protoConverter) {
         this.protoConverter = protoConverter;
     }
+
     /**
      * Converts gRPC EntropyBatch to list of JPA entities.
      *
      * @param protoBatch gRPC EntropyBatch message
      * @return List of EntropyData entities ready for persistence
      */
-    public List<EntropyData> toEntities(EntropyBatch protoBatch)
-    {
+    public List<EntropyData> toEntities(EntropyBatch protoBatch) {
         Instant serverReceived = Instant.now();
         List<TDCEvent> protoEvents = protoBatch.getEventsList();
         List<EntropyData> entities = new ArrayList<>(protoEvents.size());
 
         String sourceId = protoBatch.getSourceId();
-        String batchId = (sourceId == null || sourceId.isBlank())
-                ? "batch-" + protoBatch.getBatchSequence()
-                : sourceId + "-" + protoBatch.getBatchSequence();
+        String batchId =
+                (sourceId == null || sourceId.isBlank())
+                        ? "batch-" + protoBatch.getBatchSequence()
+                        : sourceId + "-" + protoBatch.getBatchSequence();
         long baseSequence = protoBatch.getBatchSequence() * 10000L; // Avoid sequence collision
 
         for (int i = 0; i < protoEvents.size(); i++) {
@@ -72,26 +71,29 @@ public class EntropyBatchProcessingService
             // Validate proto before conversion
             String validationError = protoConverter.getValidationError(protoEvent);
             if (validationError != null) {
-                LOG.warnf("Invalid TDCEvent in batch %d at index %d - skipping (reason=%s)",
+                LOG.warnf(
+                        "Invalid TDCEvent in batch %d at index %d - skipping (reason=%s)",
                         protoBatch.getBatchSequence(), i, validationError);
                 recordRejectedEvent(validationError);
                 continue;
             }
 
             long sequence = baseSequence + i;
-            EntropyData entity = protoConverter.toEntity(protoEvent, sequence, serverReceived, batchId, sourceId);
+            EntropyData entity =
+                    protoConverter.toEntity(
+                            protoEvent, sequence, serverReceived, batchId, sourceId);
             entities.add(entity);
             auditWhitenedEntropyIfEnabled(protoBatch.getBatchSequence(), i, protoEvent, entity);
         }
 
-        LOG.debugf("Converted batch %d: %d proto events -> %d entities",
+        LOG.debugf(
+                "Converted batch %d: %d proto events -> %d entities",
                 protoBatch.getBatchSequence(), protoEvents.size(), entities.size());
 
         return entities;
     }
 
-    private void recordRejectedEvent(String validationError)
-    {
+    private void recordRejectedEvent(String validationError) {
         if (meterRegistry == null) {
             return;
         }
@@ -103,8 +105,7 @@ public class EntropyBatchProcessingService
                 .increment();
     }
 
-    private String reasonTag(String validationError)
-    {
+    private String reasonTag(String validationError) {
         if (validationError.contains("whitened_entropy")) {
             return "whitened_entropy";
         }
@@ -121,24 +122,22 @@ public class EntropyBatchProcessingService
     }
 
     private void auditWhitenedEntropyIfEnabled(
-            long batchSequence,
-            int eventIndex,
-            TDCEvent protoEvent,
-            EntropyData entity)
-    {
+            long batchSequence, int eventIndex, TDCEvent protoEvent, EntropyData entity) {
         if (!whitenedAuditEnabled) {
             return;
         }
 
         byte[] inbound = entity.whitenedEntropy;
-        if (inbound == null || inbound.length != GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES) {
+        if (inbound == null
+                || inbound.length != GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES) {
             return;
         }
 
         byte[] recomputed = recomputeGatewayPerEventWhitening(protoEvent.getTdcTimestampPs());
         if (!Arrays.equals(inbound, recomputed)) {
             LOG.warnf(
-                    "Whitened entropy audit mismatch: batch=%d index=%d sequence=%d tdc_timestamp_ps=%d",
+                    "Whitened entropy audit mismatch: batch=%d index=%d sequence=%d"
+                            + " tdc_timestamp_ps=%d",
                     batchSequence,
                     eventIndex,
                     entity.sequenceNumber,
@@ -146,13 +145,12 @@ public class EntropyBatchProcessingService
         }
     }
 
-    private byte[] recomputeGatewayPerEventWhitening(long tdcTimestampPs)
-    {
-        byte[] canonical = ByteBuffer
-                .allocate(Long.BYTES)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .putLong(tdcTimestampPs)
-                .array();
+    private byte[] recomputeGatewayPerEventWhitening(long tdcTimestampPs) {
+        byte[] canonical =
+                ByteBuffer.allocate(Long.BYTES)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .putLong(tdcTimestampPs)
+                        .array();
 
         byte[] stageOne = new byte[canonical.length - 1];
         for (int i = 0; i < stageOne.length; i++) {
@@ -173,27 +171,25 @@ public class EntropyBatchProcessingService
      * @param result        Processing result DTO
      * @return gRPC Ack message
      */
-    public Ack createAck(long batchSequence, BatchProcessingResultDTO result)
-    {
-        Ack.Builder ackBuilder = Ack.newBuilder()
-                .setSuccess(result.success())
-                .setReceivedSequence((int) batchSequence)
-                .setReceivedAtUs(Instant.now().toEpochMilli() * 1000);
+    public Ack createAck(long batchSequence, BatchProcessingResultDTO result) {
+        Ack.Builder ackBuilder =
+                Ack.newBuilder()
+                        .setSuccess(result.success())
+                        .setReceivedSequence((int) batchSequence)
+                        .setReceivedAtUs(Instant.now().toEpochMilli() * 1000);
 
         if (result.success()) {
-            ackBuilder.setMessage(String.format(
-                    "Successfully processed %d events", result.persistedEvents()));
+            ackBuilder.setMessage(
+                    String.format("Successfully processed %d events", result.persistedEvents()));
         } else {
-            ackBuilder.setMessage(result.errorMessage() != null
-                    ? result.errorMessage()
-                    : "Unknown error");
+            ackBuilder.setMessage(
+                    result.errorMessage() != null ? result.errorMessage() : "Unknown error");
         }
 
         // Add missing sequences if any
         if (result.missingSequences() != null && !result.missingSequences().isEmpty()) {
-            List<Integer> missingSeqs = result.missingSequences().stream()
-                    .map(Long::intValue)
-                    .toList();
+            List<Integer> missingSeqs =
+                    result.missingSequences().stream().map(Long::intValue).toList();
             ackBuilder.addAllMissingSequences(missingSeqs);
         }
 
@@ -206,8 +202,7 @@ public class EntropyBatchProcessingService
      * @param batch gRPC EntropyBatch to validate
      * @return true if valid, false otherwise
      */
-    public boolean validateBatch(EntropyBatch batch)
-    {
+    public boolean validateBatch(EntropyBatch batch) {
         if (batch.getEventsCount() == 0) {
             LOG.warnf("Received empty batch: sequence=%d", batch.getBatchSequence());
             return false;
@@ -217,7 +212,8 @@ public class EntropyBatchProcessingService
         if (batch.hasMetrics()) {
             EdgeMetrics metrics = batch.getMetrics();
             if (!metrics.getFrequencyTestPassed() || !metrics.getRunsTestPassed()) {
-                LOG.warnf("Batch %d failed edge validation (freq=%b, runs=%b)",
+                LOG.warnf(
+                        "Batch %d failed edge validation (freq=%b, runs=%b)",
                         batch.getBatchSequence(),
                         metrics.getFrequencyTestPassed(),
                         metrics.getRunsTestPassed());
@@ -234,8 +230,7 @@ public class EntropyBatchProcessingService
      * @param batch gRPC EntropyBatch
      * @return EdgeValidationMetrics DTO or null if no metrics available
      */
-    public EdgeValidationMetricsDTO extractEdgeMetrics(EntropyBatch batch)
-    {
+    public EdgeValidationMetricsDTO extractEdgeMetrics(EntropyBatch batch) {
         if (!batch.hasMetrics()) {
             return null;
         }
@@ -250,7 +245,6 @@ public class EntropyBatchProcessingService
                 batch.hasTests() ? batch.getTests().getRunsPvalue() : null,
                 protoMetrics.hasRctPassed() ? protoMetrics.getRctPassed() : null,
                 protoMetrics.hasAptPassed() ? protoMetrics.getAptPassed() : null,
-                protoMetrics.hasBiasPpm() ? protoMetrics.getBiasPpm() : null
-        );
+                protoMetrics.hasBiasPpm() ? protoMetrics.getBiasPpm() : null);
     }
 }

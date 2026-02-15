@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.model;
 
 import io.quarkus.hibernate.orm.panache.PanacheEntity;
@@ -7,20 +8,20 @@ import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
-
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 
 @Entity
-@Table(name = EntropyData.TABLE_NAME, indexes = {
-        @Index(name = "idx_hw_timestamp_ns", columnList = "hw_timestamp_ns"),
-        @Index(name = "idx_sequence", columnList = "sequence"),
-        @Index(name = "idx_server_received", columnList = "server_received"),
-        @Index(name = "idx_batch_id", columnList = "batch_id")
-})
-public class EntropyData extends PanacheEntity
-{
+@Table(
+        name = EntropyData.TABLE_NAME,
+        indexes = {
+            @Index(name = "idx_hw_timestamp_ns", columnList = "hw_timestamp_ns"),
+            @Index(name = "idx_sequence", columnList = "sequence"),
+            @Index(name = "idx_server_received", columnList = "server_received"),
+            @Index(name = "idx_batch_id", columnList = "batch_id")
+        })
+public class EntropyData extends PanacheEntity {
     public static final String TABLE_NAME = "entropy_data";
 
     /**
@@ -59,8 +60,7 @@ public class EntropyData extends PanacheEntity
     /**
      * Hardware channel the event originated from.
      */
-    @Column
-    public Integer channel;
+    @Column public Integer channel;
 
     /**
      * Edge gateway ingestion timestamp in microseconds.
@@ -119,14 +119,12 @@ public class EntropyData extends PanacheEntity
     public Double qualityScore = 1.0;
 
     // Constructors
-    public EntropyData()
-    {
+    public EntropyData() {
         this.serverReceived = Instant.now();
         this.createdAt = Instant.now();
     }
 
-    public EntropyData(String timestamp, Long hwTimestampNs, Long sequenceNumber)
-    {
+    public EntropyData(String timestamp, Long hwTimestampNs, Long sequenceNumber) {
         this();
         this.timestamp = timestamp;
         this.hwTimestampNs = hwTimestampNs;
@@ -143,19 +141,20 @@ public class EntropyData extends PanacheEntity
      * @param end   End of time window
      * @return List of intervals in nanoseconds
      */
-    public static List<Long> calculateIntervals(Instant start, Instant end)
-    {
+    public static List<Long> calculateIntervals(Instant start, Instant end) {
         @SuppressWarnings("unchecked")
-        List<Number> rows = getEntityManager()
-                .createNativeQuery("""
+        List<Number> rows =
+                getEntityManager()
+                        .createNativeQuery(
+                                """
                             SELECT hw_timestamp_ns - lag(hw_timestamp_ns) OVER (ORDER BY hw_timestamp_ns) AS delta_ns
                             FROM entropy_data
                             WHERE server_received >= :start
                               AND server_received <  :end
                         """)
-                .setParameter("start", start)
-                .setParameter("end", end)
-                .getResultList();
+                        .setParameter("start", start)
+                        .setParameter("end", end)
+                        .getResultList();
 
         return rows.stream()
                 .map(n -> n == null ? null : n.longValue())
@@ -165,8 +164,11 @@ public class EntropyData extends PanacheEntity
     }
 
     public static IntervalStats calculateIntervalStats(Instant start, Instant end) {
-        Object[] row = (Object[]) getEntityManager()
-                .createNativeQuery("""
+        Object[] row =
+                (Object[])
+                        getEntityManager()
+                                .createNativeQuery(
+                                        """
             WITH d AS (
               SELECT hw_timestamp_ns - lag(hw_timestamp_ns) OVER (ORDER BY hw_timestamp_ns) AS delta_ns
               FROM entropy_data
@@ -183,15 +185,15 @@ public class EntropyData extends PanacheEntity
             FROM d
             WHERE delta_ns > 0
         """)
-                .setParameter("start", start)
-                .setParameter("end", end)
-                .getSingleResult();
+                                .setParameter("start", start)
+                                .setParameter("end", end)
+                                .getSingleResult();
 
         long count = ((Number) row[0]).longValue();
         double mean = row[1] == null ? 0.0 : ((Number) row[1]).doubleValue();
-        double std  = row[2] == null ? 0.0 : ((Number) row[2]).doubleValue();
-        long min    = row[3] == null ? 0L  : ((Number) row[3]).longValue();
-        long max    = row[4] == null ? 0L  : ((Number) row[4]).longValue();
+        double std = row[2] == null ? 0.0 : ((Number) row[2]).doubleValue();
+        long min = row[3] == null ? 0L : ((Number) row[3]).longValue();
+        long max = row[4] == null ? 0L : ((Number) row[4]).longValue();
         double median = row[5] == null ? 0.0 : ((Number) row[5]).doubleValue();
 
         return new IntervalStats(count, mean, std, min, max, median);
@@ -201,8 +203,7 @@ public class EntropyData extends PanacheEntity
      * Gets events in chronological order for sequential processing.
      * Optimized query using hw_timestamp_ns index.
      */
-    public static List<EntropyData> findInTimeWindow(Instant start, Instant end)
-    {
+    public static List<EntropyData> findInTimeWindow(Instant start, Instant end) {
         return find("serverReceived BETWEEN ?1 AND ?2 ORDER BY hwTimestampNs", start, end).list();
     }
 
@@ -210,10 +211,9 @@ public class EntropyData extends PanacheEntity
      * Calculates the interval to the previous event in nanoseconds.
      * Returns null if this is the first event.
      */
-    public Long getIntervalToPrevious()
-    {
-        EntropyData previous = find("hwTimestampNs < ?1 ORDER BY hwTimestampNs DESC", hwTimestampNs)
-                .firstResult();
+    public Long getIntervalToPrevious() {
+        EntropyData previous =
+                find("hwTimestampNs < ?1 ORDER BY hwTimestampNs DESC", hwTimestampNs).firstResult();
 
         return previous != null ? hwTimestampNs - previous.hwTimestampNs : null;
     }
@@ -221,23 +221,22 @@ public class EntropyData extends PanacheEntity
     /**
      * Gets statistical summary for the last N events.
      */
-    public static EntropyStatistics getRecentStatistics(int eventCount)
-    {
-        List<EntropyData> recentEvents = find("ORDER BY hwTimestampNs DESC")
-                .range(0, eventCount - 1)
-                .list();
+    public static EntropyStatistics getRecentStatistics(int eventCount) {
+        List<EntropyData> recentEvents =
+                find("ORDER BY hwTimestampNs DESC").range(0, eventCount - 1).list();
 
         if (recentEvents.size() < 2) {
             return new EntropyStatistics(0, 0, 0, 0);
         }
 
-        List<Long> intervals = recentEvents.stream()
-                .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
-                .toList()
-                .stream()
-                .map(EntropyData::getIntervalToPrevious)
-                .filter(Objects::nonNull)
-                .toList();
+        List<Long> intervals =
+                recentEvents.stream()
+                        .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
+                        .toList()
+                        .stream()
+                        .map(EntropyData::getIntervalToPrevious)
+                        .filter(Objects::nonNull)
+                        .toList();
 
         return EntropyStatistics.fromIntervals(intervals);
     }
@@ -246,8 +245,7 @@ public class EntropyData extends PanacheEntity
      * Validates data integrity and quality.
      * Used by the UDP server before persistence.
      */
-    public boolean isValidForEntropy()
-    {
+    public boolean isValidForEntropy() {
         // Basic field validation
         if (hwTimestampNs == null || hwTimestampNs <= 0) return false;
         if (sequenceNumber == null || sequenceNumber < 0) return false;
@@ -264,26 +262,23 @@ public class EntropyData extends PanacheEntity
     }
 
     @Override
-    public String toString()
-    {
+    public String toString() {
         return String.format(
-                "EntropyData{id=%d, batch=%s, hwTimestampNs=%d, sequence=%d, networkDelay=%dms, quality=%.2f}",
-                id, batchId, hwTimestampNs, sequenceNumber, networkDelayMs, qualityScore
-        );
+                "EntropyData{id=%d, batch=%s, hwTimestampNs=%d, sequence=%d, networkDelay=%dms,"
+                        + " quality=%.2f}",
+                id, batchId, hwTimestampNs, sequenceNumber, networkDelayMs, qualityScore);
     }
 
     @Override
-    public boolean equals(Object o)
-    {
+    public boolean equals(Object o) {
         if (this == o) return true;
         if (!(o instanceof EntropyData that)) return false;
-        return Objects.equals(hwTimestampNs, that.hwTimestampNs) &&
-                Objects.equals(sequenceNumber, that.sequenceNumber);
+        return Objects.equals(hwTimestampNs, that.hwTimestampNs)
+                && Objects.equals(sequenceNumber, that.sequenceNumber);
     }
 
     @Override
-    public int hashCode()
-    {
+    public int hashCode() {
         return Objects.hash(hwTimestampNs, sequenceNumber);
     }
 
@@ -291,14 +286,8 @@ public class EntropyData extends PanacheEntity
      * Statistical summary record for entropy analysis.
      */
     public record EntropyStatistics(
-            double meanInterval,
-            double stdDeviation,
-            long minInterval,
-            long maxInterval
-    )
-    {
-        public static EntropyStatistics fromIntervals(List<Long> intervals)
-        {
+            double meanInterval, double stdDeviation, long minInterval, long maxInterval) {
+        public static EntropyStatistics fromIntervals(List<Long> intervals) {
             if (intervals.isEmpty()) {
                 return new EntropyStatistics(0, 0, 0, 0);
             }
@@ -307,10 +296,11 @@ public class EntropyData extends PanacheEntity
             long min = intervals.stream().mapToLong(Long::longValue).min().orElse(0);
             long max = intervals.stream().mapToLong(Long::longValue).max().orElse(0);
 
-            double variance = intervals.stream()
-                    .mapToDouble(interval -> Math.pow(interval - mean, 2))
-                    .average()
-                    .orElse(0);
+            double variance =
+                    intervals.stream()
+                            .mapToDouble(interval -> Math.pow(interval - mean, 2))
+                            .average()
+                            .orElse(0);
             double stdDev = Math.sqrt(variance);
 
             return new EntropyStatistics(mean, stdDev, min, max);

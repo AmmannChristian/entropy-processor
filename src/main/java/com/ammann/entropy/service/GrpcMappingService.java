@@ -1,13 +1,13 @@
+/* (C)2026 */
 package com.ammann.entropy.service;
 
 import com.ammann.entropy.grpc.proto.TDCEvent;
 import com.ammann.entropy.model.EntropyData;
 import jakarta.enterprise.context.ApplicationScoped;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
-
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 /**
  * Service for mapping between gRPC protobuf messages and JPA entities.
@@ -17,13 +17,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * and network delay calculation.
  */
 @ApplicationScoped
-public class GrpcMappingService
-{
+public class GrpcMappingService {
     static final int EXPECTED_WHITENED_ENTROPY_BYTES = 32;
     private static final Logger LOG = Logger.getLogger(GrpcMappingService.class);
     private static final AtomicBoolean COMPAT_MODE_LOGGED = new AtomicBoolean(false);
 
-    @ConfigProperty(name = "entropy.processor.grpc.allow-missing-whitened-entropy", defaultValue = "false")
+    @ConfigProperty(
+            name = "entropy.processor.grpc.allow-missing-whitened-entropy",
+            defaultValue = "false")
     boolean allowMissingWhitenedEntropy;
 
     /**
@@ -67,12 +68,12 @@ public class GrpcMappingService
         entity.createdAt = Instant.now();
         entity.qualityScore = 1.0; // Default, updated later by DataQualityService
 
-        // Calculate ingestion-to-server delay: cloud server reception minus edge gateway ingestion (ms)
+        // Calculate ingestion-to-server delay: cloud server reception minus edge gateway ingestion
+        // (ms)
         long rpiTimestampUs = proto.getRpiTimestampUs();
         long serverTimestampUs = serverReceived.toEpochMilli() * 1000;
-        entity.networkDelayMs = rpiTimestampUs > 0
-                ? (serverTimestampUs - rpiTimestampUs) / 1000
-                : null;
+        entity.networkDelayMs =
+                rpiTimestampUs > 0 ? (serverTimestampUs - rpiTimestampUs) / 1000 : null;
 
         return entity;
     }
@@ -108,14 +109,15 @@ public class GrpcMappingService
             if (proto.getWhitenedEntropy().isEmpty() && allowMissingWhitenedEntropy) {
                 if (COMPAT_MODE_LOGGED.compareAndSet(false, true)) {
                     LOG.warnf(
-                            "Compatibility mode enabled: accepting events without whitened_entropy; "
-                                    + "disable via entropy.processor.grpc.allow-missing-whitened-entropy=false after gateway rollout");
+                            "Compatibility mode enabled: accepting events without whitened_entropy;"
+                                    + " disable via"
+                                    + " entropy.processor.grpc.allow-missing-whitened-entropy=false"
+                                    + " after gateway rollout");
                 }
             } else {
                 return String.format(
                         "invalid whitened_entropy size=%d (expected %d)",
-                        proto.getWhitenedEntropy().size(),
-                        EXPECTED_WHITENED_ENTROPY_BYTES);
+                        proto.getWhitenedEntropy().size(), EXPECTED_WHITENED_ENTROPY_BYTES);
             }
         }
 
@@ -134,8 +136,7 @@ public class GrpcMappingService
         return null;
     }
 
-    void setAllowMissingWhitenedEntropyForTesting(boolean allow)
-    {
+    void setAllowMissingWhitenedEntropyForTesting(boolean allow) {
         this.allowMissingWhitenedEntropy = allow;
     }
 }

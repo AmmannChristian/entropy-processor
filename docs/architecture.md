@@ -404,7 +404,7 @@ Public endpoints (health probes, metrics, OpenAPI specification, gRPC health, an
 
 For outbound gRPC calls to NIST services, the service uses one of two authentication strategies:
 
-1. **Token propagation**: The bearer token from an incoming REST request is forwarded to the NIST gRPC service via `BearerTokenCallCredentials`
+1. **Token propagation**: The bearer token from an incoming REST request is forwarded to the NIST gRPC service via the `withBearerToken()` method, which attaches an Authorization header using gRPC metadata interceptors
 2. **Client credentials**: The `OidcClientService` obtains a service token using the `private_key_jwt` client authentication method (RFC 7523)
 
 ### Mutual TLS

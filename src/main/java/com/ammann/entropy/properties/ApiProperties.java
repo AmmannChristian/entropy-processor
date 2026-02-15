@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.properties;
 
 import io.quarkus.runtime.annotations.RegisterForReflection;
@@ -27,6 +28,7 @@ public final class ApiProperties {
      */
     public static final class Entropy {
         private Entropy() {}
+
         public static final String BASE = "/entropy";
         public static final String SHANNON = BASE + "/shannon";
         public static final String COMPREHENSIVE = BASE + "/comprehensive";
@@ -41,6 +43,7 @@ public final class ApiProperties {
      */
     public static final class Events {
         private Events() {}
+
         public static final String BASE = "/events";
         public static final String RECENT = BASE + "/recent";
         public static final String INTERVALS = BASE + "/intervals";
@@ -56,6 +59,7 @@ public final class ApiProperties {
      */
     public static final class Public {
         private Public() {}
+
         public static final String BASE = "/public";
         public static final String RECENT_ACTIVITY = BASE + "/recent-activity";
     }
@@ -65,6 +69,7 @@ public final class ApiProperties {
      */
     public static final class System {
         private System() {}
+
         public static final String BASE = "/system";
         public static final String STATUS = BASE + "/status";
         public static final String CONFIG = BASE + "/config";
@@ -75,6 +80,7 @@ public final class ApiProperties {
      */
     public static final class Admin {
         private Admin() {}
+
         public static final String BASE = "/admin";
         public static final String MAINTENANCE = BASE + "/maintenance";
     }
@@ -84,6 +90,7 @@ public final class ApiProperties {
      */
     public static final class Health {
         private Health() {}
+
         public static final String BASE = "/q/health";
         public static final String LIVE = BASE + "/live";
         public static final String READY = BASE + "/ready";

@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.model;
 
 import com.ammann.entropy.dto.ClockDriftInfoDTO;
@@ -6,7 +7,6 @@ import com.ammann.entropy.dto.DecayRateInfoDTO;
 import io.quarkus.hibernate.orm.panache.PanacheEntity;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -24,11 +24,13 @@ import java.util.List;
  * report or filtering by quality score threshold.
  */
 @Entity
-@Table(name = "data_quality_reports", indexes = {
-        @Index(name = "idx_report_timestamp", columnList = "report_timestamp"),
-        @Index(name = "idx_quality_score", columnList = "overall_quality_score"),
-        @Index(name = "idx_window_start", columnList = "window_start")
-})
+@Table(
+        name = "data_quality_reports",
+        indexes = {
+            @Index(name = "idx_report_timestamp", columnList = "report_timestamp"),
+            @Index(name = "idx_quality_score", columnList = "overall_quality_score"),
+            @Index(name = "idx_window_start", columnList = "window_start")
+        })
 public class DataQualityReport extends PanacheEntity {
 
     /**
@@ -113,8 +115,7 @@ public class DataQualityReport extends PanacheEntity {
     @Column(name = "recommendations", columnDefinition = "text array")
     public String[] recommendations;
 
-    public DataQualityReport() {
-    }
+    public DataQualityReport() {}
 
     /**
      * Constructs a report for the given analysis window and event count.
@@ -146,8 +147,12 @@ public class DataQualityReport extends PanacheEntity {
      * @return List of reports
      */
     public static List<DataQualityReport> findInRange(Instant start, Instant end) {
-        return find("reportTimestamp >= ?1 AND reportTimestamp <= ?2 ORDER BY reportTimestamp DESC",
-                start, end).list();
+        return find(
+                        "reportTimestamp >= ?1 AND reportTimestamp <= ?2 ORDER BY reportTimestamp"
+                                + " DESC",
+                        start,
+                        end)
+                .list();
     }
 
     /**
@@ -158,8 +163,12 @@ public class DataQualityReport extends PanacheEntity {
      * @return List of low-quality reports
      */
     public static List<DataQualityReport> findLowQuality(double minScore, Instant since) {
-        return find("overallQualityScore < ?1 AND reportTimestamp > ?2 ORDER BY overallQualityScore ASC",
-                minScore, since).list();
+        return find(
+                        "overallQualityScore < ?1 AND reportTimestamp > ?2 ORDER BY"
+                                + " overallQualityScore ASC",
+                        minScore,
+                        since)
+                .list();
     }
 
     /**
@@ -192,8 +201,12 @@ public class DataQualityReport extends PanacheEntity {
      */
     public static List<DataQualityReport> findClockDriftIssues(
             double driftThresholdUsPerHour, Instant since) {
-        return find("ABS(clockDriftUsPerHour) > ?1 AND reportTimestamp > ?2 ORDER BY reportTimestamp DESC",
-                driftThresholdUsPerHour, since).list();
+        return find(
+                        "ABS(clockDriftUsPerHour) > ?1 AND reportTimestamp > ?2 ORDER BY"
+                                + " reportTimestamp DESC",
+                        driftThresholdUsPerHour,
+                        since)
+                .list();
     }
 
     /**
@@ -205,26 +218,26 @@ public class DataQualityReport extends PanacheEntity {
      * @return a DTO representation of this report
      */
     public DataQualityReportDTO toDTO() {
-        ClockDriftInfoDTO clockDrift = clockDriftUsPerHour != null
-                ? ClockDriftInfoDTO.create(clockDriftUsPerHour)
-                : null;
+        ClockDriftInfoDTO clockDrift =
+                clockDriftUsPerHour != null ? ClockDriftInfoDTO.create(clockDriftUsPerHour) : null;
 
-        DecayRateInfoDTO decayRate = averageDecayIntervalMs != null
-                ? new DecayRateInfoDTO(averageDecayIntervalMs, decayRateRealistic, null, null)
-                : null;
+        DecayRateInfoDTO decayRate =
+                averageDecayIntervalMs != null
+                        ? new DecayRateInfoDTO(
+                                averageDecayIntervalMs, decayRateRealistic, null, null)
+                        : null;
 
         return new DataQualityReportDTO(
                 totalEvents,
                 List.of(), // Gaps not stored in DB entity (computed on demand)
-                0,         // gapCount not stored
+                0, // gapCount not stored
                 missingSequenceCount != null ? missingSequenceCount.longValue() : 0L,
                 List.of(), // deprecated field, always empty
                 clockDrift,
                 decayRate,
                 averageNetworkDelayMs,
                 overallQualityScore,
-                reportTimestamp
-        );
+                reportTimestamp);
     }
 
     /**
@@ -268,7 +281,6 @@ public class DataQualityReport extends PanacheEntity {
     public String toString() {
         return String.format(
                 "DataQualityReport{id=%d, window=%s to %s, events=%d, score=%.3f, missing=%d}",
-                id, windowStart, windowEnd, totalEvents, overallQualityScore, missingSequenceCount
-        );
+                id, windowStart, windowEnd, totalEvents, overallQualityScore, missingSequenceCount);
     }
 }

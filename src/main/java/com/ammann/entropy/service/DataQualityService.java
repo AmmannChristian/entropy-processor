@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.service;
 
 import com.ammann.entropy.dto.ClockDriftInfoDTO;
@@ -6,12 +7,11 @@ import com.ammann.entropy.dto.DecayRateInfoDTO;
 import com.ammann.entropy.dto.SequenceGapDTO;
 import com.ammann.entropy.model.EntropyData;
 import jakarta.enterprise.context.ApplicationScoped;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
-
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 /**
  * Service for assessing the quality of entropy event streams.
@@ -82,40 +82,41 @@ public class DataQualityService {
 
         // Detect sequence gaps as ranges (memory-efficient)
         List<SequenceGapDTO> sequenceGaps = detectSequenceGaps(events);
-        long totalMissing = sequenceGaps.stream()
-                .mapToLong(SequenceGapDTO::gapSize)
-                .sum();
+        long totalMissing = sequenceGaps.stream().mapToLong(SequenceGapDTO::gapSize).sum();
 
         // Calculate average network delay
-        double avgNetworkDelay = events.stream()
-                .filter(e -> e.networkDelayMs != null)
-                .mapToLong(e -> e.networkDelayMs)
-                .average()
-                .orElse(0.0);
+        double avgNetworkDelay =
+                events.stream()
+                        .filter(e -> e.networkDelayMs != null)
+                        .mapToLong(e -> e.networkDelayMs)
+                        .average()
+                        .orElse(0.0);
 
         // Calculate intervals for decay rate check
         List<Long> intervals = calculateIntervals(events);
-        double avgIntervalNs = intervals.isEmpty() ? 0.0
-                : intervals.stream().mapToLong(Long::longValue).average().orElse(0.0);
+        double avgIntervalNs =
+                intervals.isEmpty()
+                        ? 0.0
+                        : intervals.stream().mapToLong(Long::longValue).average().orElse(0.0);
         double avgIntervalMs = avgIntervalNs / 1_000_000.0;
 
         // Check decay rate plausibility (derived from configured expected rate)
-        DecayRateInfoDTO decayRate = DecayRateInfoDTO.create(
-                avgIntervalMs, getExpectedIntervalMs(),
-                getMinAcceptableIntervalMs(), getMaxAcceptableIntervalMs());
+        DecayRateInfoDTO decayRate =
+                DecayRateInfoDTO.create(
+                        avgIntervalMs,
+                        getExpectedIntervalMs(),
+                        getMinAcceptableIntervalMs(),
+                        getMaxAcceptableIntervalMs());
 
         // Calculate clock drift
         ClockDriftInfoDTO clockDrift = checkClockDrift(events);
 
         // Calculate overall quality score
-        double qualityScore = calculateQualityScore(
-                events.size(),
-                totalMissing,
-                clockDrift,
-                decayRate
-        );
+        double qualityScore =
+                calculateQualityScore(events.size(), totalMissing, clockDrift, decayRate);
 
-        LOG.infof("Quality assessment: %d events, %d missing sequences in %d gaps, score=%.3f",
+        LOG.infof(
+                "Quality assessment: %d events, %d missing sequences in %d gaps, score=%.3f",
                 events.size(), totalMissing, sequenceGaps.size(), qualityScore);
 
         return new DataQualityReportDTO(
@@ -128,8 +129,7 @@ public class DataQualityService {
                 decayRate,
                 avgNetworkDelay,
                 qualityScore,
-                Instant.now()
-        );
+                Instant.now());
     }
 
     /**
@@ -143,17 +143,16 @@ public class DataQualityService {
             return false;
         }
 
-        double avgIntervalNs = intervals.stream()
-                .mapToLong(Long::longValue)
-                .average()
-                .orElse(0.0);
+        double avgIntervalNs = intervals.stream().mapToLong(Long::longValue).average().orElse(0.0);
         double avgIntervalMs = avgIntervalNs / 1_000_000.0;
 
-        boolean realistic = avgIntervalMs >= getMinAcceptableIntervalMs()
-                && avgIntervalMs <= getMaxAcceptableIntervalMs();
+        boolean realistic =
+                avgIntervalMs >= getMinAcceptableIntervalMs()
+                        && avgIntervalMs <= getMaxAcceptableIntervalMs();
 
         if (!realistic) {
-            LOG.warnf("Unrealistic decay rate: avg interval = %.2f ms (expected: %.2f ms)",
+            LOG.warnf(
+                    "Unrealistic decay rate: avg interval = %.2f ms (expected: %.2f ms)",
                     avgIntervalMs, getExpectedIntervalMs());
         }
 
@@ -187,7 +186,8 @@ public class DataQualityService {
 
         if (!gaps.isEmpty()) {
             long totalMissing = gaps.stream().mapToLong(SequenceGapDTO::gapSize).sum();
-            LOG.warnf("Detected %d sequence gaps containing %d missing sequences (packet loss)",
+            LOG.warnf(
+                    "Detected %d sequence gaps containing %d missing sequences (packet loss)",
                     gaps.size(), totalMissing);
         }
 
@@ -214,8 +214,10 @@ public class DataQualityService {
 
             if (gapSize > maxEnumerable) {
                 throw new IllegalStateException(
-                        "Gap too large to enumerate (" + gapSize + " sequences). " +
-                        "Use detectSequenceGaps() instead for memory-efficient gap detection.");
+                        "Gap too large to enumerate ("
+                                + gapSize
+                                + " sequences). Use detectSequenceGaps() instead for"
+                                + " memory-efficient gap detection.");
             }
 
             if (gapSize > 0) {
@@ -242,10 +244,11 @@ public class DataQualityService {
 
         // Calculate drift trend using linear regression
         // Compare network delay at start vs. end of time window
-        List<EntropyData> sortedEvents = events.stream()
-                .filter(e -> e.networkDelayMs != null && e.serverReceived != null)
-                .sorted((a, b) -> a.serverReceived.compareTo(b.serverReceived))
-                .toList();
+        List<EntropyData> sortedEvents =
+                events.stream()
+                        .filter(e -> e.networkDelayMs != null && e.serverReceived != null)
+                        .sorted((a, b) -> a.serverReceived.compareTo(b.serverReceived))
+                        .toList();
 
         if (sortedEvents.size() < 10) {
             return ClockDriftInfoDTO.create(0.0);
@@ -255,25 +258,22 @@ public class DataQualityService {
         int sampleSize = sortedEvents.size() / 10;
         if (sampleSize < 5) sampleSize = 5;
 
-        List<EntropyData> startSample = sortedEvents.subList(0, Math.min(sampleSize, sortedEvents.size()));
-        List<EntropyData> endSample = sortedEvents.subList(
-                Math.max(0, sortedEvents.size() - sampleSize),
-                sortedEvents.size()
-        );
+        List<EntropyData> startSample =
+                sortedEvents.subList(0, Math.min(sampleSize, sortedEvents.size()));
+        List<EntropyData> endSample =
+                sortedEvents.subList(
+                        Math.max(0, sortedEvents.size() - sampleSize), sortedEvents.size());
 
-        double avgDelayStart = startSample.stream()
-                .mapToLong(e -> e.networkDelayMs)
-                .average()
-                .orElse(0.0);
+        double avgDelayStart =
+                startSample.stream().mapToLong(e -> e.networkDelayMs).average().orElse(0.0);
 
-        double avgDelayEnd = endSample.stream()
-                .mapToLong(e -> e.networkDelayMs)
-                .average()
-                .orElse(0.0);
+        double avgDelayEnd =
+                endSample.stream().mapToLong(e -> e.networkDelayMs).average().orElse(0.0);
 
         // Calculate time span in hours
-        long timeSpanMs = sortedEvents.get(sortedEvents.size() - 1).serverReceived.toEpochMilli()
-                - sortedEvents.get(0).serverReceived.toEpochMilli();
+        long timeSpanMs =
+                sortedEvents.get(sortedEvents.size() - 1).serverReceived.toEpochMilli()
+                        - sortedEvents.get(0).serverReceived.toEpochMilli();
         double timeSpanHours = timeSpanMs / (1000.0 * 60.0 * 60.0);
 
         if (timeSpanHours < 0.001) {
@@ -285,7 +285,8 @@ public class DataQualityService {
         double delayDriftMs = avgDelayEnd - avgDelayStart;
         double driftRateUsPerHour = (delayDriftMs * 1000.0) / timeSpanHours;
 
-        LOG.debugf("Clock drift analysis: %.2f µs/h over %.2f hours (delay: %.2f -> %.2f ms)",
+        LOG.debugf(
+                "Clock drift analysis: %.2f µs/h over %.2f hours (delay: %.2f -> %.2f ms)",
                 driftRateUsPerHour, timeSpanHours, avgDelayStart, avgDelayEnd);
 
         return ClockDriftInfoDTO.create(driftRateUsPerHour);
@@ -304,9 +305,10 @@ public class DataQualityService {
         }
 
         List<Long> intervals = new ArrayList<>(events.size() - 1);
-        List<EntropyData> sorted = events.stream()
-                .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
-                .toList();
+        List<EntropyData> sorted =
+                events.stream()
+                        .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
+                        .toList();
 
         for (int i = 1; i < sorted.size(); i++) {
             long interval = sorted.get(i).hwTimestampNs - sorted.get(i - 1).hwTimestampNs;
