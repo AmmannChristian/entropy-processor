@@ -9,7 +9,10 @@ import com.ammann.entropy.model.EntropyData;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -71,7 +74,7 @@ public class DataQualityService {
     /**
      * Performs comprehensive data quality assessment on a list of events.
      *
-     * @param events List of EntropyData events (should be ordered by sequence)
+     * @param events List of EntropyData events
      * @return DataQualityReportDTO with quality metrics
      */
     public DataQualityReportDTO assessDataQuality(List<EntropyData> events) {
@@ -164,7 +167,7 @@ public class DataQualityService {
      * Instead of enumerating every missing sequence (which can cause OOM for large gaps),
      * this method returns a list of gap ranges with start, end, and count.
      *
-     * @param events List of EntropyData events (must be ordered by sequence)
+     * @param events List of EntropyData events
      * @return List of SequenceGapDTO representing gap ranges
      */
     public List<SequenceGapDTO> detectSequenceGaps(List<EntropyData> events) {
@@ -173,14 +176,25 @@ public class DataQualityService {
         }
 
         List<SequenceGapDTO> gaps = new ArrayList<>();
+        Map<String, List<EntropyData>> eventsBySource =
+                events.stream()
+                        .filter(e -> e != null && e.sequenceNumber != null)
+                        .collect(Collectors.groupingBy(e -> normalizeSourceId(e.sourceAddress)));
 
-        for (int i = 1; i < events.size(); i++) {
-            long prevSeq = events.get(i - 1).sequenceNumber;
-            long currentSeq = events.get(i).sequenceNumber;
-            long gapSize = currentSeq - prevSeq - 1;
+        for (List<EntropyData> sourceEvents : eventsBySource.values()) {
+            List<EntropyData> sortedBySequence =
+                    sourceEvents.stream()
+                            .sorted(Comparator.comparingLong(e -> e.sequenceNumber))
+                            .toList();
 
-            if (gapSize > 0) {
-                gaps.add(SequenceGapDTO.of(prevSeq + 1, currentSeq - 1));
+            for (int i = 1; i < sortedBySequence.size(); i++) {
+                long prevSeq = sortedBySequence.get(i - 1).sequenceNumber;
+                long currentSeq = sortedBySequence.get(i).sequenceNumber;
+                long gapSize = currentSeq - prevSeq - 1;
+
+                if (gapSize > 0) {
+                    gaps.add(SequenceGapDTO.of(prevSeq + 1, currentSeq - 1));
+                }
             }
         }
 
@@ -192,6 +206,13 @@ public class DataQualityService {
         }
 
         return gaps;
+    }
+
+    private String normalizeSourceId(String sourceId) {
+        if (sourceId == null || sourceId.isBlank()) {
+            return "unknown-source";
+        }
+        return sourceId;
     }
 
     /**

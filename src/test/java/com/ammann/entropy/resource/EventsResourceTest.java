@@ -37,7 +37,7 @@ class EventsResourceTest {
         EntropyData e2 = TestDataFactory.createEntropyEvent(2, 2_000L, base.plusSeconds(1));
         EntropyData.persist(e1, e2);
 
-        var response = resource.getRecentEvents(2);
+        var response = resource.getRecentEvents(null, null, null, 2);
         RecentEventsResponseDTO dto = (RecentEventsResponseDTO) response.getEntity();
 
         assertThat(dto.count()).isEqualTo(2);
@@ -51,7 +51,7 @@ class EventsResourceTest {
         EntropyData.deleteAll();
         EventsResource resource = buildResource();
 
-        var response = resource.getRecentEvents(5);
+        var response = resource.getRecentEvents(null, null, null, 5);
         RecentEventsResponseDTO dto = (RecentEventsResponseDTO) response.getEntity();
 
         assertThat(dto.count()).isZero();
@@ -64,15 +64,21 @@ class EventsResourceTest {
     void getRecentEventsRejectsInvalidCount() {
         EventsResource resource = buildResource();
 
-        assertThatThrownBy(() -> resource.getRecentEvents(0))
+        assertThatThrownBy(() -> resource.getRecentEvents(null, null, null, 0))
                 .isInstanceOf(ValidationException.class);
-        assertThatThrownBy(() -> resource.getRecentEvents(10001))
+        assertThatThrownBy(() -> resource.getRecentEvents(null, null, null, 10001))
                 .isInstanceOf(ValidationException.class);
     }
 
     @Test
     void getRecentEventsRequiresResourceLevelRoles() throws NoSuchMethodException {
-        var method = EventsResource.class.getMethod("getRecentEvents", int.class);
+        var method =
+                EventsResource.class.getMethod(
+                        "getRecentEvents",
+                        com.ammann.entropy.dto.PageRequestDTO.class,
+                        com.ammann.entropy.dto.SortRequestDTO.class,
+                        com.ammann.entropy.dto.EntropyDataQueryParamsDTO.class,
+                        Integer.class);
 
         assertThat(method.getAnnotation(PermitAll.class)).isNull();
 

@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -42,6 +43,9 @@ public class EntropyBatchProcessingService {
 
     @Inject MeterRegistry meterRegistry;
 
+    private final ConcurrentHashMap<String, SourceSequenceCounter> sequenceCounters =
+            new ConcurrentHashMap<>();
+
     @Inject
     public EntropyBatchProcessingService(GrpcMappingService protoConverter) {
         this.protoConverter = protoConverter;
@@ -63,7 +67,7 @@ public class EntropyBatchProcessingService {
                 (sourceId == null || sourceId.isBlank())
                         ? "batch-" + protoBatch.getBatchSequence()
                         : sourceId + "-" + protoBatch.getBatchSequence();
-        long baseSequence = protoBatch.getBatchSequence() * 10000L; // Avoid sequence collision
+        SourceSequenceCounter sequenceCounter = sequenceCounterFor(sourceId);
 
         for (int i = 0; i < protoEvents.size(); i++) {
             TDCEvent protoEvent = protoEvents.get(i);
@@ -78,7 +82,7 @@ public class EntropyBatchProcessingService {
                 continue;
             }
 
-            long sequence = baseSequence + i;
+            long sequence = sequenceCounter.nextSequence();
             EntropyData entity =
                     protoConverter.toEntity(
                             protoEvent, sequence, serverReceived, batchId, sourceId);
@@ -91,6 +95,44 @@ public class EntropyBatchProcessingService {
                 protoBatch.getBatchSequence(), protoEvents.size(), entities.size());
 
         return entities;
+    }
+
+    private SourceSequenceCounter sequenceCounterFor(String sourceId) {
+        String sourceKey = (sourceId == null || sourceId.isBlank()) ? "unknown-source" : sourceId;
+        return sequenceCounters.computeIfAbsent(sourceKey, this::loadSequenceCounter);
+    }
+
+    private SourceSequenceCounter loadSequenceCounter(String sourceKey) {
+        long initialSequence = 0L;
+        try {
+            EntropyData latest =
+                    "unknown-source".equals(sourceKey)
+                            ? EntropyData.find("ORDER BY sequenceNumber DESC").firstResult()
+                            : EntropyData.find(
+                                            "sourceAddress = ?1 ORDER BY sequenceNumber DESC",
+                                            sourceKey)
+                                    .firstResult();
+            if (latest != null && latest.sequenceNumber != null) {
+                initialSequence = latest.sequenceNumber;
+            }
+        } catch (Exception e) {
+            LOG.debugf(
+                    "Could not initialize sequence counter from database for source %s", sourceKey);
+        }
+        return new SourceSequenceCounter(initialSequence);
+    }
+
+    private static final class SourceSequenceCounter {
+        private long nextSequence;
+
+        private SourceSequenceCounter(long initialSequence) {
+            this.nextSequence = initialSequence;
+        }
+
+        synchronized long nextSequence() {
+            nextSequence += 1;
+            return nextSequence;
+        }
     }
 
     private void recordRejectedEvent(String validationError) {

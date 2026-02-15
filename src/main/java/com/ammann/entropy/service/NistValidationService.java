@@ -29,6 +29,8 @@ import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
+import jakarta.transaction.Synchronization;
+import jakarta.transaction.TransactionSynchronizationRegistry;
 import jakarta.transaction.Transactional;
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
@@ -85,6 +87,8 @@ public class NistValidationService {
 
     @ConfigProperty(name = "nist.sp80090b.max-bytes", defaultValue = "1000000")
     int sp80090bMaxBytes;
+
+    @Inject TransactionSynchronizationRegistry transactionSynchronizationRegistry;
 
     private final EntityManager em;
     private final MeterRegistry meterRegistry;
@@ -889,7 +893,12 @@ public class NistValidationService {
                 "Created async NIST SP 800-22 validation job: jobId=%s window=%s..%s user=%s",
                 jobId, start, end, createdBy);
 
-        CompletableFuture.runAsync(() -> processSp80022ValidationJob(jobId, bearerToken));
+        dispatchAfterCommit(
+                () ->
+                        CompletableFuture.runAsync(
+                                () -> processSp80022ValidationJob(jobId, bearerToken)),
+                "SP 800-22",
+                jobId);
 
         return jobId;
     }
@@ -928,9 +937,44 @@ public class NistValidationService {
                 "Created async NIST SP 800-90B validation job: jobId=%s window=%s..%s user=%s",
                 jobId, start, end, createdBy);
 
-        CompletableFuture.runAsync(() -> processSp80090bValidationJob(jobId, bearerToken));
+        dispatchAfterCommit(
+                () ->
+                        CompletableFuture.runAsync(
+                                () -> processSp80090bValidationJob(jobId, bearerToken)),
+                "SP 800-90B",
+                jobId);
 
         return jobId;
+    }
+
+    private void dispatchAfterCommit(Runnable dispatch, String validationType, UUID jobId) {
+        if (transactionSynchronizationRegistry == null) {
+            LOG.warnf(
+                    "TransactionSynchronizationRegistry not available, dispatching %s job %s"
+                            + " immediately",
+                    validationType, jobId);
+            dispatch.run();
+            return;
+        }
+
+        transactionSynchronizationRegistry.registerInterposedSynchronization(
+                new Synchronization() {
+                    @Override
+                    public void beforeCompletion() {
+                        // no-op
+                    }
+
+                    @Override
+                    public void afterCompletion(int status) {
+                        if (status == jakarta.transaction.Status.STATUS_COMMITTED) {
+                            dispatch.run();
+                        } else {
+                            LOG.warnf(
+                                    "Skipping %s job %s dispatch because transaction status=%d",
+                                    validationType, jobId, status);
+                        }
+                    }
+                });
     }
 
     /**

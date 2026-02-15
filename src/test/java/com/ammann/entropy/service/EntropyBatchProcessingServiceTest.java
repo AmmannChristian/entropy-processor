@@ -41,8 +41,8 @@ class EntropyBatchProcessingServiceTest {
 
         assertThat(entities).hasSize(2);
         assertThat(entities.get(0).batchId).isEqualTo("sensor-x-7");
-        assertThat(entities.get(0).sequenceNumber).isEqualTo(70_000L);
-        assertThat(entities.get(1).sequenceNumber).isEqualTo(70_001L);
+        assertThat(entities.get(0).sequenceNumber).isEqualTo(1L);
+        assertThat(entities.get(1).sequenceNumber).isEqualTo(2L);
     }
 
     @Test

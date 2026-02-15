@@ -55,32 +55,94 @@ public class EventsResource {
 
     @Inject EntropyStatisticsService entropyStatisticsService;
 
+    @Inject CountCacheServiceDTO cacheService;
+
     @ConfigProperty(name = "entropy.source.expected-rate-hz", defaultValue = "184.0")
     double expectedRateHz;
 
     @GET
     @Path(ApiProperties.Events.RECENT)
     @Operation(
-            summary = "Get Recent Events (Authenticated)",
+            summary = "Get Recent Events with Pagination, Filtering, and Sorting",
             description =
-                    "Returns detailed entropy events including timing and quality metrics. Requires"
-                        + " authentication. For public access, use /api/v1/public/recent-activity.")
+                    "Returns detailed entropy events with pagination, filtering, and sorting"
+                        + " support. Supports both new pagination API (page/size/sort/filters) and"
+                        + " legacy count parameter for backward compatibility. For public access,"
+                        + " use /api/v1/public/recent-activity.")
     @APIResponses({
         @APIResponse(
                 responseCode = "200",
                 description = "Recent events retrieved successfully",
-                content =
-                        @Content(schema = @Schema(implementation = RecentEventsResponseDTO.class))),
+                content = @Content(schema = @Schema(implementation = PageResponseDTO.class))),
         @APIResponse(responseCode = "400", description = "Invalid parameters"),
         @APIResponse(responseCode = "500", description = "Internal server error")
     })
     public Response getRecentEvents(
-            @Parameter(description = "Number of recent events to return (max 10000)")
+            @BeanParam PageRequestDTO pageRequest,
+            @BeanParam SortRequestDTO sortRequest,
+            @BeanParam EntropyDataQueryParamsDTO filters,
+            @Parameter(description = "Legacy count parameter (deprecated, use page/size instead)")
                     @QueryParam("count")
-                    @DefaultValue("100")
-                    int count) {
+                    Integer legacyCount) {
 
-        LOG.debugf("Recent events request: count=%d", count);
+        // Legacy count parameter (deprecated, but supported for backward compatibility)
+        if (legacyCount != null) {
+            LOG.warnf("Using deprecated 'count' parameter. Migrate to page/size.");
+            return handleLegacyCountRequest(legacyCount);
+        }
+
+        // New pagination API
+        LOG.debugf(
+                "Paginated events request: page=%d, size=%d, filters=%s",
+                pageRequest.page, pageRequest.size, filters);
+
+        // Validate
+        QueryValidatorDTO.validatePageRequest(pageRequest);
+        filters.validate(pageRequest); // TimescaleDB-specific checks
+
+        // Build Query
+        var query = filters.buildQuery(sortRequest);
+
+        // Count total (with caching)
+        String cacheKey =
+                CountCacheServiceDTO.generateCacheKey(
+                        "EntropyData",
+                        "batchId",
+                        filters.batchId,
+                        "minQualityScore",
+                        filters.minQualityScore,
+                        "channel",
+                        filters.channel,
+                        "from",
+                        filters.from,
+                        "to",
+                        filters.to,
+                        "search",
+                        filters.search);
+        long total = cacheService.getCachedCount(cacheKey, query::count);
+
+        // Fetch page
+        List<EntropyData> events = query.page(pageRequest.page, pageRequest.size).list();
+
+        // Map to DTOs (reuse existing logic)
+        List<EventSummaryDTO> dtos = mapToEventSummaries(events);
+
+        // Wrap in PageResponseDTO
+        PageResponseDTO<EventSummaryDTO> response = PageResponseDTO.of(dtos, pageRequest, total);
+
+        LOG.infof(
+                "Paginated query: page=%d, size=%d, total=%d, filters=%s",
+                pageRequest.page, pageRequest.size, total, filters);
+
+        return Response.ok(response).build();
+    }
+
+    /**
+     * Legacy handler for the deprecated 'count' parameter.
+     * Returns the old RecentEventsResponseDTO format for backward compatibility.
+     */
+    private Response handleLegacyCountRequest(int count) {
+        LOG.debugf("Legacy count request: count=%d", count);
 
         if (count <= 0) {
             throw ValidationException.invalidParameter("count", count, "positive integer");
@@ -97,6 +159,35 @@ public class EventsResource {
             return Response.ok(new RecentEventsResponseDTO(List.of(), 0, null, null)).build();
         }
 
+        List<EntropyData> sortedEvents =
+                events.stream()
+                        .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
+                        .toList();
+
+        List<EventSummaryDTO> eventSummaries = mapToEventSummaries(sortedEvents);
+
+        Instant oldest = sortedEvents.getFirst().serverReceived;
+        Instant newest = sortedEvents.getLast().serverReceived;
+
+        var response =
+                new RecentEventsResponseDTO(eventSummaries, eventSummaries.size(), oldest, newest);
+
+        LOG.infof(
+                "Returned %d recent events from %s to %s (legacy format)",
+                eventSummaries.size(), oldest, newest);
+        return Response.ok(response).build();
+    }
+
+    /**
+     * Map EntropyData entities to EventSummaryDTO with intervalToPrevious calculation.
+     * Assumes input is sorted by hwTimestampNs ascending.
+     */
+    private List<EventSummaryDTO> mapToEventSummaries(List<EntropyData> events) {
+        if (events.isEmpty()) {
+            return List.of();
+        }
+
+        // Ensure sorted by hwTimestampNs ascending
         List<EntropyData> sortedEvents =
                 events.stream()
                         .sorted((a, b) -> Long.compare(a.hwTimestampNs, b.hwTimestampNs))
@@ -124,14 +215,7 @@ public class EventsResource {
             previousTimestamp = event.hwTimestampNs;
         }
 
-        Instant oldest = sortedEvents.getFirst().serverReceived;
-        Instant newest = sortedEvents.getLast().serverReceived;
-
-        var response =
-                new RecentEventsResponseDTO(eventSummaries, eventSummaries.size(), oldest, newest);
-
-        LOG.infof("Returned %d recent events from %s to %s", eventSummaries.size(), oldest, newest);
-        return Response.ok(response).build();
+        return eventSummaries;
     }
 
     @GET
