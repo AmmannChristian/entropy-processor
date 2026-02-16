@@ -1,18 +1,16 @@
 /* (C)2026 */
 package com.ammann.entropy.service;
 
-import com.ammann.entropy.dto.NIST90BResultDTO;
-import com.ammann.entropy.dto.NISTSuiteResultDTO;
-import com.ammann.entropy.dto.NISTTestResultDTO;
-import com.ammann.entropy.dto.NistValidationJobDTO;
-import com.ammann.entropy.dto.TimeWindowDTO;
+import com.ammann.entropy.dto.*;
 import com.ammann.entropy.enumeration.JobStatus;
+import com.ammann.entropy.enumeration.TestType;
 import com.ammann.entropy.enumeration.ValidationType;
 import com.ammann.entropy.exception.NistException;
 import com.ammann.entropy.exception.ValidationException;
 import com.ammann.entropy.grpc.proto.sp80022.*;
 import com.ammann.entropy.grpc.proto.sp80090b.*;
 import com.ammann.entropy.model.EntropyData;
+import com.ammann.entropy.model.Nist90BEstimatorResult;
 import com.ammann.entropy.model.Nist90BResult;
 import com.ammann.entropy.model.NistTestResult;
 import com.ammann.entropy.model.NistValidationJob;
@@ -31,6 +29,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import jakarta.inject.Named;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Synchronization;
 import jakarta.transaction.TransactionSynchronizationRegistry;
@@ -38,18 +37,12 @@ import jakarta.transaction.Transactional;
 import java.io.ByteArrayOutputStream;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 /**
@@ -95,6 +88,10 @@ public class NistValidationService {
     @Inject TransactionSynchronizationRegistry transactionSynchronizationRegistry;
     @Inject Instance<NistValidationService> selfReference;
 
+    @Inject
+    @Named("nist-validation-executor")
+    ManagedExecutor nistExecutor;
+
     private final EntityManager em;
     private final MeterRegistry meterRegistry;
     private final OidcClientService oidcClientService;
@@ -134,8 +131,9 @@ public class NistValidationService {
      * Analyzes entropy data from the previous hour.
      * Uses async job pattern for consistent tracking and progress visibility.
      */
-//    @Scheduled(cron = "0 0 * * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
-    @Scheduled(cron = "0 */10 * * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(
+            cron = "${nist.sp80022.hourly-cron}",
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     @Transactional
     public void runHourlyNISTValidation() {
         initMetrics();
@@ -164,8 +162,9 @@ public class NistValidationService {
      * nist.sp80090b.weekly-cron / SP80090B_WEEKLY_CRON.
      * Uses async job pattern for consistent tracking and progress visibility.
      */
-//    @Scheduled(cron = "{nist.sp80090b.weekly-cron}", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
-    @Scheduled(cron = "0 */10 * * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(
+            cron = "{nist.sp80090b.weekly-cron}",
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     @Transactional
     public void runWeeklyNIST90BValidation() {
         initMetrics();
@@ -544,7 +543,8 @@ public class NistValidationService {
                 start, end, sourceBytes, assessmentSample.length);
 
         String batchId = events.getFirst().batchId;
-        Nist90BResult entity = assess90B(assessmentSample, batchId, start, end, bearerToken);
+        UUID assessmentRunId = UUID.randomUUID();
+        Nist90BResult entity = assess90B(assessmentSample, batchId, start, end, bearerToken, assessmentRunId);
         NIST90BResultDTO result = entity.toDTO();
         LOG.infof(
                 "NIST SP 800-90B assessment complete: minEntropy=%.6f, passed=%b, bits=%d",
@@ -563,7 +563,7 @@ public class NistValidationService {
      * @return The persisted Nist90BResult entity
      */
     private Nist90BResult assess90B(
-            byte[] bitstream, String batchId, Instant start, Instant end, String bearerToken) {
+            byte[] bitstream, String batchId, Instant start, Instant end, String bearerToken, UUID assessmentRunId) {
         if (sp80090bOverride == null && sp80090bClient == null) {
             LOG.warn("NIST SP 800-90B client not configured");
             recordFailureMetric();
@@ -606,50 +606,76 @@ public class NistValidationService {
             throw new NistException("NIST SP 800-90B gRPC call failed", e);
         }
 
-        // Extract entropy estimates from EstimatorResults
-        double minEntropy = entropyResult.getMinEntropy();
-        double shannonEntropy = extractEntropyEstimate(entropyResult, "Shannon");
-        double collisionEntropy = extractEntropyEstimate(entropyResult, "Collision");
-        double markovEntropy = extractEntropyEstimate(entropyResult, "Markov");
-        double compressionEntropy = extractEntropyEstimate(entropyResult, "Compression");
-
+        // Use provided assessment run ID (passed from caller)
         long bitstreamLength = bitstream.length * 8L;
 
+        // Create aggregate result entity
         Nist90BResult entity =
                 new Nist90BResult(
                         batchId,
-                        minEntropy,
-                        shannonEntropy,
-                        collisionEntropy,
-                        markovEntropy,
-                        compressionEntropy,
+                        entropyResult.getMinEntropy(),
                         entropyResult.getPassed(),
                         ensureJsonDocument(entropyResult.getAssessmentSummary(), "summary"),
                         bitstreamLength,
                         start,
                         end);
 
+        entity.assessmentRunId = assessmentRunId;
         em.persist(entity);
+
+        // Persist ALL 14 estimators (10 Non-IID + 4 IID) with full metadata
+        for (Sp80090bEstimatorResult est : entropyResult.getNonIidResultsList()) {
+            persistEstimator(assessmentRunId, TestType.NON_IID, est);
+        }
+        for (Sp80090bEstimatorResult est : entropyResult.getIidResultsList()) {
+            persistEstimator(assessmentRunId, TestType.IID, est);
+        }
+
         return entity;
     }
 
     /**
-     * Extract entropy estimate from EstimatorResult lists by name pattern.
+     * Persists a single estimator result to the nist_90b_estimator_results table.
+     *
+     * <p>Part of V2a dual-write strategy to store ALL 14 estimators (10 Non-IID + 4 IID)
+     * with full metadata (passed, details, description).
+     *
+     * <p><b>Entropy Semantics:</b> Upstream -1.0 sentinel → NULL (distinguishes non-entropy
+     * tests from true zero entropy).
+     *
+     * @param assessmentRunId Assessment run identifier (foreign key)
+     * @param testType Test type (IID or NON_IID)
+     * @param proto Upstream protobuf estimator result
      */
-    private double extractEntropyEstimate(Sp80090bAssessmentResponse response, String namePattern) {
-        // Search in Non-IID results first (more conservative estimates)
-        for (Sp80090bEstimatorResult result : response.getNonIidResultsList()) {
-            if (result.getName().toLowerCase().contains(namePattern.toLowerCase())) {
-                return result.getEntropyEstimate();
-            }
-        }
-        // Fallback to IID results
-        for (Sp80090bEstimatorResult result : response.getIidResultsList()) {
-            if (result.getName().toLowerCase().contains(namePattern.toLowerCase())) {
-                return result.getEntropyEstimate();
-            }
-        }
-        return 0.0; // Not found
+    private void persistEstimator(
+            UUID assessmentRunId,
+            TestType testType,
+            Sp80090bEstimatorResult proto) {
+
+        // Entropy semantics: Upstream -1.0 = non-entropy test, map to NULL
+        // True 0.0 = degenerate source, keep as 0.0
+        double rawEntropy = proto.getEntropyEstimate();
+        Double entropyEstimate = rawEntropy < 0.0 ? null : rawEntropy;
+
+        // Extract details as Map (Quarkus/Jackson serializes to JSONB)
+        Map<String, Double> details =
+                proto.getDetailsCount() > 0 ? new HashMap<>(proto.getDetailsMap()) : null;
+
+        Nist90BEstimatorResult estimator =
+                new Nist90BEstimatorResult(
+                        assessmentRunId,
+                        testType,
+                        proto.getName(),
+                        entropyEstimate,
+                        proto.getPassed(),
+                        details,
+                        proto.getDescription());
+
+        em.persist(estimator);
+
+        LOG.debugf(
+                "Persisted estimator: runId=%s type=%s name=%s entropy=%s passed=%b",
+                assessmentRunId, testType, proto.getName(), entropyEstimate, proto.getPassed());
     }
 
     private String ensureJsonDocument(String rawValue, String fallbackField) {
@@ -811,7 +837,7 @@ public class NistValidationService {
                         .max(Instant::compareTo)
                         .orElse(Instant.now());
 
-        NistTestResult firstTest = tests.get(0);
+        NistTestResult firstTest = tests.getFirst();
         return new NISTSuiteResultDTO(
                 testDTOs, // Aggregated tests (15, not 15 × chunks)
                 testDTOs.size(), // Now correctly 15, not 30
@@ -913,9 +939,8 @@ public class NistValidationService {
         dispatchAfterCommit(
                 () ->
                         CompletableFuture.runAsync(
-                                () ->
-                                        runSp80022WorkerWithExtendedTimeout(
-                                                jobId, bearerToken)),
+                                () -> runSp80022WorkerWithExtendedTimeout(jobId, bearerToken),
+                                nistExecutor),
                 "SP 800-22",
                 jobId);
 
@@ -960,9 +985,8 @@ public class NistValidationService {
         dispatchAfterCommit(
                 () ->
                         CompletableFuture.runAsync(
-                                () ->
-                                        runSp80090bWorkerWithExtendedTimeout(
-                                                jobId, bearerToken)),
+                                () -> runSp80090bWorkerWithExtendedTimeout(jobId, bearerToken),
+                                nistExecutor),
                 "SP 800-90B",
                 jobId);
 
@@ -1008,7 +1032,9 @@ public class NistValidationService {
         if (selfReference != null && selfReference.isResolvable()) {
             return selfReference.get();
         }
-        LOG.warn("NistValidationService self reference unavailable, falling back to direct invocation");
+        LOG.warn(
+                "NistValidationService self reference unavailable, falling back to direct"
+                        + " invocation");
         return this;
     }
 
@@ -1034,7 +1060,8 @@ public class NistValidationService {
             return;
         }
         if (job.status == JobStatus.COMPLETED) {
-            LOG.warnf("Skipping FAILED update for job %s because status is already COMPLETED", jobId);
+            LOG.warnf(
+                    "Skipping FAILED update for job %s because status is already COMPLETED", jobId);
             return;
         }
         job.status = JobStatus.FAILED;
@@ -1227,12 +1254,11 @@ public class NistValidationService {
                         "SP 800-90B job %s: processing chunk %d/%d (%d bytes)",
                         jobId, i + 1, chunks.size(), chunk.length);
 
-                // Run assessment on chunk
+                // Run assessment on chunk (pass assessmentRunId to ensure consistency)
                 Nist90BResult entity =
-                        assess90B(chunk, batchId, job.windowStart, job.windowEnd, bearerToken);
+                        assess90B(chunk, batchId, job.windowStart, job.windowEnd, bearerToken, assessmentRunId);
 
                 // Update the persisted entity with chunk metadata
-                entity.assessmentRunId = assessmentRunId;
                 entity.chunkIndex = i;
                 entity.chunkCount = chunks.size();
                 entity.persist();

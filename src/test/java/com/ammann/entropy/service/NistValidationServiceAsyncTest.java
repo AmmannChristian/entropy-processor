@@ -101,7 +101,8 @@ class NistValidationServiceAsyncTest {
                                             start, end, "token-123", "dispatch-user");
                                 });
 
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertSp80022JobCompleted(jobId));
+        await().atMost(Duration.ofSeconds(10))
+                .untilAsserted(() -> assertSp80022JobCompleted(jobId));
     }
 
     @Test
@@ -122,7 +123,8 @@ class NistValidationServiceAsyncTest {
                                             start, end, "token-xyz", "dispatch-user");
                                 });
 
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertSp80090bJobCompleted(jobId));
+        await().atMost(Duration.ofSeconds(10))
+                .untilAsserted(() -> assertSp80090bJobCompleted(jobId));
     }
 
     @Test
@@ -380,18 +382,7 @@ class NistValidationServiceAsyncTest {
         job.persist();
 
         Nist90BResult result =
-                new Nist90BResult(
-                        "batch-1",
-                        7.5,
-                        7.1,
-                        6.8,
-                        6.5,
-                        6.3,
-                        true,
-                        "{\"summary\":\"ok\"}",
-                        4096L,
-                        start,
-                        end);
+                new Nist90BResult("batch-1", 7.5, true, "{\"summary\":\"ok\"}", 4096L, start, end);
         result.assessmentRunId = assessmentRunId;
         result.persist();
 

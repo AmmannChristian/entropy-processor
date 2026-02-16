@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.ammann.entropy.dto.NISTSuiteResultDTO;
+import com.ammann.entropy.enumeration.TestType;
 import com.ammann.entropy.exception.NistException;
 import com.ammann.entropy.grpc.proto.sp80022.Sp80022TestResponse;
 import com.ammann.entropy.grpc.proto.sp80022.Sp80022TestResult;
@@ -16,6 +17,7 @@ import com.ammann.entropy.grpc.proto.sp80090b.Sp80090bAssessmentResponse;
 import com.ammann.entropy.grpc.proto.sp80090b.Sp80090bAssessmentService;
 import com.ammann.entropy.grpc.proto.sp80090b.Sp80090bEstimatorResult;
 import com.ammann.entropy.model.EntropyData;
+import com.ammann.entropy.model.Nist90BEstimatorResult;
 import com.ammann.entropy.model.Nist90BResult;
 import com.ammann.entropy.model.NistTestResult;
 import com.ammann.entropy.support.TestDataFactory;
@@ -645,5 +647,228 @@ class NistValidationServiceTest {
         Object original = field.get(target);
         field.set(target, value);
         return original;
+    }
+
+    // ==================== V2a Tests: Comprehensive Estimator Storage ====================
+
+    /**
+     * V2a: Test that upstream -1.0 entropy estimate is mapped to NULL (non-entropy test).
+     */
+    @Test
+    @TestTransaction
+    void v2a_persistEstimator_upstreamMinusOne_becomesNull() throws Exception {
+        seedEntropyEvents("batch-v2a-minus-one");
+
+        // Mock SP 800-90B response with -1.0 entropy (non-entropy test like Chi-Square)
+        Sp80090bAssessmentService mockService =
+                request ->
+                        io.smallrye.mutiny.Uni.createFrom()
+                                .item(
+                                        Sp80090bAssessmentResponse.newBuilder()
+                                                .setMinEntropy(7.5)
+                                                .setPassed(true)
+                                                .setAssessmentSummary("{\"test\":\"summary\"}")
+                                                .addIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Chi-Square Test")
+                                                                .setEntropyEstimate(
+                                                                        -1.0) // Non-entropy test
+                                                                .setPassed(true)
+                                                                .setDescription(
+                                                                        "Tests independence")
+                                                                .build())
+                                                .build());
+
+        service.setSp80090bOverride(mockService);
+
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        service.validate90BTimeWindow(start, end);
+
+        // Verify estimator was persisted with NULL entropy
+        List<Nist90BEstimatorResult> estimators =
+                Nist90BEstimatorResult.list("estimatorName", "Chi-Square Test");
+        assertThat(estimators).hasSize(1);
+        assertThat(estimators.get(0).entropyEstimate).isNull();
+        assertThat(estimators.get(0).passed).isTrue();
+        assertThat(estimators.get(0).testType).isEqualTo(TestType.IID);
+    }
+
+    /**
+     * V2a: Test that upstream 0.0 entropy estimate stays 0.0 (degenerate source).
+     */
+    @Test
+    @TestTransaction
+    void v2a_persistEstimator_upstreamZero_staysZero() throws Exception {
+        seedEntropyEvents("batch-v2a-zero");
+
+        Sp80090bAssessmentService mockService =
+                request ->
+                        io.smallrye.mutiny.Uni.createFrom()
+                                .item(
+                                        Sp80090bAssessmentResponse.newBuilder()
+                                                .setMinEntropy(0.0)
+                                                .setPassed(false)
+                                                .setAssessmentSummary("{\"test\":\"degenerate\"}")
+                                                .addNonIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Collision Test")
+                                                                .setEntropyEstimate(
+                                                                        0.0) // True zero
+                                                                .setPassed(false)
+                                                                .setDescription(
+                                                                        "Degenerate source"
+                                                                                + " detected")
+                                                                .build())
+                                                .build());
+
+        service.setSp80090bOverride(mockService);
+
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        service.validate90BTimeWindow(start, end);
+
+        List<Nist90BEstimatorResult> estimators =
+                Nist90BEstimatorResult.list("estimatorName", "Collision Test");
+        assertThat(estimators).hasSize(1);
+        assertThat(estimators.get(0).entropyEstimate).isEqualTo(0.0); // NOT NULL
+        assertThat(estimators.get(0).passed).isFalse();
+    }
+
+    /**
+     * V2a: Test that ALL 14 estimators (10 Non-IID + 4 IID) are persisted with dual-write.
+     */
+    @Test
+    @TestTransaction
+    void v2a_dualWrite_persistsAllEstimators() throws Exception {
+        seedEntropyEvents("batch-v2a-all-estimators");
+
+        Sp80090bAssessmentService mockService =
+                request ->
+                        io.smallrye.mutiny.Uni.createFrom()
+                                .item(
+                                        Sp80090bAssessmentResponse.newBuilder()
+                                                .setMinEntropy(6.8)
+                                                .setPassed(true)
+                                                .setAssessmentSummary("{\"summary\":\"ok\"}")
+                                                // 3 Non-IID estimators
+                                                .addNonIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Collision Estimate")
+                                                                .setEntropyEstimate(7.1)
+                                                                .setPassed(true)
+                                                                .setDescription("Non-IID collision")
+                                                                .build())
+                                                .addNonIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Markov Estimate")
+                                                                .setEntropyEstimate(6.9)
+                                                                .setPassed(true)
+                                                                .setDescription("Non-IID Markov")
+                                                                .build())
+                                                .addNonIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Compression Estimate")
+                                                                .setEntropyEstimate(7.0)
+                                                                .setPassed(true)
+                                                                .setDescription(
+                                                                        "Non-IID compression")
+                                                                .build())
+                                                // 2 IID tests
+                                                .addIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Chi-Square Independence")
+                                                                .setEntropyEstimate(
+                                                                        -1.0) // Non-entropy test
+                                                                .setPassed(true)
+                                                                .setDescription("IID chi-square")
+                                                                .build())
+                                                .addIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName(
+                                                                        "Longest Repeated"
+                                                                                + " Substring")
+                                                                .setEntropyEstimate(-1.0)
+                                                                .setPassed(true)
+                                                                .setDescription("IID LRS")
+                                                                .build())
+                                                .build());
+
+        service.setSp80090bOverride(mockService);
+
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        service.validate90BTimeWindow(start, end);
+
+        // Verify all 5 estimators were persisted
+        long totalEstimators = Nist90BEstimatorResult.count();
+        assertThat(totalEstimators).isEqualTo(5);
+
+        // Verify 3 Non-IID estimators
+        long nonIidCount =
+                Nist90BEstimatorResult.count("testType", TestType.NON_IID);
+        assertThat(nonIidCount).isEqualTo(3);
+
+        // Verify 2 IID tests
+        long iidCount =
+                Nist90BEstimatorResult.count("testType", TestType.IID);
+        assertThat(iidCount).isEqualTo(2);
+
+        // Verify aggregate result has min entropy and passed status
+        List<Nist90BResult> results = Nist90BResult.findAll().list();
+        assertThat(results).hasSize(1);
+        Nist90BResult result = results.get(0);
+        assertThat(result.minEntropy).isEqualTo(6.8); // Min entropy from upstream
+        assertThat(result.passed).isTrue();
+    }
+
+    /**
+     * V2a: Test that estimators with details JSON are persisted correctly.
+     */
+    @Test
+    @TestTransaction
+    void v2a_persistEstimator_withDetails_storesJson() throws Exception {
+        seedEntropyEvents("batch-v2a-details");
+
+        Sp80090bAssessmentService mockService =
+                request ->
+                        io.smallrye.mutiny.Uni.createFrom()
+                                .item(
+                                        Sp80090bAssessmentResponse.newBuilder()
+                                                .setMinEntropy(7.2)
+                                                .setPassed(true)
+                                                .setAssessmentSummary("{\"summary\":\"ok\"}")
+                                                .addIidResults(
+                                                        Sp80090bEstimatorResult.newBuilder()
+                                                                .setName("Chi-Square Test")
+                                                                .setEntropyEstimate(-1.0)
+                                                                .setPassed(true)
+                                                                .setDescription("Chi-square test")
+                                                                .putDetails("chi_square", 12.45)
+                                                                .putDetails("df", 10.0)
+                                                                .putDetails("p_value", 0.257)
+                                                                .build())
+                                                .build());
+
+        service.setSp80090bOverride(mockService);
+
+        Instant start = Instant.now().minusSeconds(60);
+        Instant end = Instant.now();
+
+        service.validate90BTimeWindow(start, end);
+
+        List<Nist90BEstimatorResult> estimators =
+                Nist90BEstimatorResult.list("estimatorName", "Chi-Square Test");
+        assertThat(estimators).hasSize(1);
+
+        Nist90BEstimatorResult estimator = estimators.get(0);
+        assertThat(estimator.details).isNotNull();
+        assertThat(estimator.details).containsKeys("chi_square", "df", "p_value");
+        assertThat(estimator.details.get("chi_square")).isEqualTo(12.45);
+        assertThat(estimator.details.get("df")).isEqualTo(10.0);
+        assertThat(estimator.details.get("p_value")).isEqualTo(0.257);
     }
 }

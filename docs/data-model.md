@@ -156,17 +156,13 @@ Stores individual test outcomes from NIST SP 800-22 statistical test suite execu
 
 ### nist_90b_results
 
-Stores entropy estimates produced by the NIST SP 800-90B assessment service. Each row records multiple entropy estimator outputs for a single assessment run.
+Stores entropy estimates produced by the NIST SP 800-90B assessment service. Each row records multiple estimator outputs for a single assessment run.
 
 | Column | Type | Nullable | Description |
 |---|---|---|---|
 | `id` | `BIGINT` | No | Auto-generated surrogate key |
 | `batch_id` | `VARCHAR(64)` | Yes | Entropy batch that provided the input data |
 | `min_entropy` | `DOUBLE PRECISION` | Yes | Min-entropy estimate in bits per symbol (most conservative bound) |
-| `shannon_entropy` | `DOUBLE PRECISION` | Yes | Shannon entropy estimate in bits per symbol |
-| `collision_entropy` | `DOUBLE PRECISION` | Yes | Collision entropy estimate (Renyi order 2) in bits per symbol |
-| `markov_entropy` | `DOUBLE PRECISION` | Yes | Markov model entropy estimate in bits per symbol |
-| `compression_entropy` | `DOUBLE PRECISION` | Yes | Compression-based entropy estimate in bits per symbol |
 | `passed` | `BOOLEAN` | No | Whether the overall assessment passed the minimum entropy threshold |
 | `bits_tested` | `BIGINT` | Yes | Number of bits submitted for assessment |
 | `window_start` | `TIMESTAMPTZ` | No | Start of the assessed time window |

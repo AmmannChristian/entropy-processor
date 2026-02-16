@@ -15,11 +15,13 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * Persistent entity storing the result of a NIST SP 800-90B entropy assessment.
+ * Persistent entity storing aggregate results of a NIST SP 800-90B entropy assessment.
  *
  * <p>Each row represents a single assessment run against a bitstream extracted from
- * entropy events within a time window. Multiple entropy estimators (Shannon, collision,
- * Markov, compression) are recorded alongside the overall min-entropy and pass status.
+ * entropy events within a time window. Individual estimator results (14 total: 10 Non-IID + 4 IID)
+ * are stored in {@link Nist90BEstimatorResult} with full metadata (passed, details, description).
+ *
+ * <p>This entity stores only the aggregate results: overall min-entropy and pass status.
  */
 @Entity
 @Table(
@@ -48,23 +50,7 @@ public class Nist90BResult extends PanacheEntity {
     @Column(name = "min_entropy")
     public Double minEntropy;
 
-    /** Shannon entropy estimate in bits per symbol. */
-    @Column(name = "shannon_entropy")
-    public Double shannonEntropy;
-
-    /** Collision entropy estimate in bits per symbol. */
-    @Column(name = "collision_entropy")
-    public Double collisionEntropy;
-
-    /** Markov entropy estimate in bits per symbol. */
-    @Column(name = "markov_entropy")
-    public Double markovEntropy;
-
-    /** Compression-based entropy estimate in bits per symbol. */
-    @Column(name = "compression_entropy")
-    public Double compressionEntropy;
-
-    /** Whether the assessment passed the minimum entropy threshold. */
+    /** Whether the overall assessment passed the minimum entropy threshold. */
     @Column(name = "passed", nullable = false)
     public boolean passed;
 
@@ -103,10 +89,6 @@ public class Nist90BResult extends PanacheEntity {
     public Nist90BResult(
             String batchId,
             Double minEntropy,
-            Double shannonEntropy,
-            Double collisionEntropy,
-            Double markovEntropy,
-            Double compressionEntropy,
             boolean passed,
             String assessmentDetails,
             Long bitsTested,
@@ -114,10 +96,6 @@ public class Nist90BResult extends PanacheEntity {
             Instant windowEnd) {
         this.batchId = batchId;
         this.minEntropy = minEntropy;
-        this.shannonEntropy = shannonEntropy;
-        this.collisionEntropy = collisionEntropy;
-        this.markovEntropy = markovEntropy;
-        this.compressionEntropy = compressionEntropy;
         this.passed = passed;
         this.assessmentDetails = assessmentDetails;
         this.bitsTested = bitsTested;
@@ -129,7 +107,7 @@ public class Nist90BResult extends PanacheEntity {
     /**
      * Converts this entity to its corresponding API response DTO.
      *
-     * @return DTO representation with null-safe default values for missing estimates
+     * @return DTO representation with aggregate assessment results
      */
     public NIST90BResultDTO toDTO() {
         TimeWindowDTO window =
@@ -137,14 +115,11 @@ public class Nist90BResult extends PanacheEntity {
                         windowStart, windowEnd, Duration.between(windowStart, windowEnd).toHours());
         return new NIST90BResultDTO(
                 minEntropy != null ? minEntropy : 0.0,
-                shannonEntropy != null ? shannonEntropy : 0.0,
-                collisionEntropy != null ? collisionEntropy : 0.0,
-                markovEntropy != null ? markovEntropy : 0.0,
-                compressionEntropy != null ? compressionEntropy : 0.0,
                 passed,
                 assessmentDetails,
                 executedAt,
                 bitsTested != null ? bitsTested : 0L,
-                window);
+                window,
+                assessmentRunId);
     }
 }

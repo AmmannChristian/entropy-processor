@@ -104,9 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_test_suite_run_chunk ON nist_test_results(test_su
 
 
 -- 3. nist_90b_results -- NIST SP 800-90B Entropy Assessment Results
--- Stores entropy estimates produced by the NIST SP 800-90B assessment service.
--- Each row contains multiple entropy estimator outputs (min-entropy, Shannon,
--- collision, Markov, compression) for a single assessment run.
+-- Stores aggregate results from NIST SP 800-90B assessment runs.
+-- Individual estimator results (14 total: 10 Non-IID + 4 IID) are stored
+-- in the companion table nist_90b_estimator_results with full metadata.
 
 CREATE SEQUENCE IF NOT EXISTS nist_90b_results_SEQ START WITH 1 INCREMENT BY 50;
 
@@ -114,17 +114,13 @@ CREATE TABLE IF NOT EXISTS nist_90b_results (
     id                    BIGINT           NOT NULL DEFAULT nextval('nist_90b_results_SEQ'),
     batch_id              VARCHAR(64),                   -- Entropy batch that provided the input data.
     assessment_run_id     UUID,                          -- Groups all chunks belonging to a single assessment run.
-    min_entropy           DOUBLE PRECISION,              -- Min-entropy estimate in bits per sample.
-    shannon_entropy       DOUBLE PRECISION,              -- Shannon entropy estimate in bits per sample.
-    collision_entropy     DOUBLE PRECISION,              -- Collision entropy (Renyi order 2) in bits per sample.
-    markov_entropy        DOUBLE PRECISION,              -- Markov model entropy estimate in bits per sample.
-    compression_entropy   DOUBLE PRECISION,              -- Compression-based entropy estimate in bits per sample.
+    min_entropy           DOUBLE PRECISION,              -- Overall min-entropy estimate in bits per sample.
     passed                BOOLEAN          NOT NULL,     -- Whether the overall assessment passed.
     bits_tested           BIGINT,                        -- Number of bits submitted for assessment.
     window_start          TIMESTAMPTZ      NOT NULL,     -- Start of the entropy data time window assessed.
     window_end            TIMESTAMPTZ      NOT NULL,     -- End of the entropy data time window assessed.
     executed_at           TIMESTAMPTZ      NOT NULL DEFAULT NOW(), -- Assessment execution timestamp (partition key).
-    assessment_details    JSONB,                         -- Full estimator-level output from the 90B service.
+    assessment_details    JSONB,                         -- Full assessment summary from the 90B service.
     chunk_index           INTEGER,                       -- Which chunk within a run produced this result (0-based).
     chunk_count           INTEGER,                       -- Total number of chunks in this assessment run.
 
@@ -140,6 +136,54 @@ CREATE INDEX IF NOT EXISTS idx_90b_executed_at ON nist_90b_results(executed_at);
 CREATE INDEX IF NOT EXISTS idx_90b_passed ON nist_90b_results(passed);
 CREATE INDEX IF NOT EXISTS idx_90b_assessment_run ON nist_90b_results(assessment_run_id);
 CREATE INDEX IF NOT EXISTS idx_90b_assessment_run_chunk ON nist_90b_results(assessment_run_id, chunk_index);
+
+
+-- 3a. nist_90b_estimator_results -- Individual NIST SP 800-90B Estimator Results
+-- Stores detailed results for ALL 14 estimators (10 Non-IID + 4 IID) with full metadata.
+-- This table provides the comprehensive estimator-level view that was previously lost.
+--
+-- IMPORTANT: Entropy semantics distinguish non-entropy tests from zero entropy:
+--   - entropyEstimate = NULL: Non-entropy test (e.g., Chi-Square, LRS)
+--   - entropyEstimate = 0.0:  True zero entropy (degenerate source detected)
+--   - Upstream -1.0 is mapped to NULL by the service layer
+
+CREATE TABLE IF NOT EXISTS nist_90b_estimator_results (
+    id                  BIGSERIAL PRIMARY KEY,
+    assessment_run_id   UUID NOT NULL,
+    test_type           VARCHAR(10) NOT NULL CHECK (test_type IN ('IID', 'NON_IID')),
+    estimator_name      VARCHAR(100) NOT NULL,
+    entropy_estimate    DOUBLE PRECISION,
+    passed              BOOLEAN NOT NULL,
+    details_json        JSONB,
+    description         TEXT,
+
+    -- NOTE: No foreign key constraint due to TimescaleDB partitioning limitations.
+    -- assessment_run_id references nist_90b_results, but TimescaleDB requires
+    -- UNIQUE constraints to include the partitioning column (executed_at).
+    -- Referential integrity is ensured by application logic and UUID uniqueness.
+    CONSTRAINT uq_estimator_per_run UNIQUE (assessment_run_id, test_type, estimator_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_estimator_assessment ON nist_90b_estimator_results(assessment_run_id);
+CREATE INDEX IF NOT EXISTS idx_estimator_type ON nist_90b_estimator_results(test_type);
+
+COMMENT ON TABLE nist_90b_estimator_results IS
+  'Comprehensive NIST SP 800-90B estimator results. Stores all 14 estimators (10 Non-IID + 4 IID) with full metadata (passed, details, description). Replaces the deprecated shannon/collision/markov/compression columns that only stored 4 partial results.';
+
+COMMENT ON COLUMN nist_90b_estimator_results.test_type IS
+  'Estimator category: IID (4 tests) or NON_IID (10 estimators) per NIST SP 800-90B specification.';
+
+COMMENT ON COLUMN nist_90b_estimator_results.entropy_estimate IS
+  'Entropy estimate in bits per sample. NULL for non-entropy tests (e.g., Chi-Square, LRS). Upstream -1.0 is mapped to NULL to distinguish from true zero entropy (0.0 = degenerate source).';
+
+COMMENT ON COLUMN nist_90b_estimator_results.passed IS
+  'Whether this individual estimator test passed. Distinct from overall assessment pass/fail in nist_90b_results.passed.';
+
+COMMENT ON COLUMN nist_90b_estimator_results.details_json IS
+  'Estimator-specific metadata as JSONB object (e.g., chi_square value, degrees of freedom, cutoff thresholds).';
+
+COMMENT ON COLUMN nist_90b_estimator_results.description IS
+  'Human-readable description of what this estimator tests (provided by upstream NIST service).';
 
 
 -- 4. data_quality_reports -- Periodic Quality Assessment Summaries

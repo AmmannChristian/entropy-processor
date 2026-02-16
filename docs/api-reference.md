@@ -327,7 +327,7 @@ service Sp80090bAssessmentService {
 }
 ```
 
-The request specifies the sample data, bits per symbol, and assessment modes (IID and/or non-IID). The response provides an overall min-entropy estimate, individual estimator results (Shannon, Collision, Markov, Compression), and a pass/fail status.
+The request specifies the sample data, bits per symbol, and assessment modes (IID and/or non-IID). The response provides an overall min-entropy estimate, individual estimator results (for example Most Common Value, Collision, Markov, Compression), and a pass/fail status.
 
 ### gRPC Health Service
 

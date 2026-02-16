@@ -89,10 +89,7 @@ public class NistJobMaintenanceService {
             LOG.warnf(
                     "Watchdog: marked %d stuck NIST validation jobs as FAILED (running=%d,"
                             + " queued=%d) - JobIDs: %s",
-                    totalMarked,
-                    markedRunning,
-                    markedQueued,
-                    stuckJobIds);
+                    totalMarked, markedRunning, markedQueued, stuckJobIds);
         }
     }
 

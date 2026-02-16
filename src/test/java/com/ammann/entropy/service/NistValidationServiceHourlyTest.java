@@ -122,15 +122,12 @@ class NistValidationServiceHourlyTest {
         Instant start = end.minus(Duration.ofDays(7));
         return new NIST90BResultDTO(
                 7.5,
-                7.3,
-                7.1,
-                6.9,
-                6.7,
                 true,
                 "ok",
                 Instant.now(),
                 1024L,
-                new TimeWindowDTO(start, end, Duration.between(start, end).toHours()));
+                new TimeWindowDTO(start, end, Duration.between(start, end).toHours()),
+                UUID.randomUUID());
     }
 
     private static final class TestableNistValidationService extends NistValidationService {
