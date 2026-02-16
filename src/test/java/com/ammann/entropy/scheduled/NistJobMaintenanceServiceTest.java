@@ -44,6 +44,29 @@ class NistJobMaintenanceServiceTest {
 
     @Test
     @TestTransaction
+    void detectStuckJobsMarksOldQueuedJobsAsFailed() {
+        NistValidationJob.deleteAll();
+
+        NistValidationJob oldQueued =
+                persistJob(JobStatus.QUEUED, null, Instant.now().minusSeconds(3600));
+        NistValidationJob freshQueued = persistJob(JobStatus.QUEUED, null);
+
+        service.detectStuckJobs();
+        NistValidationJob.getEntityManager().clear();
+
+        NistValidationJob oldQueuedReloaded = NistValidationJob.findById(oldQueued.id);
+        NistValidationJob freshQueuedReloaded = NistValidationJob.findById(freshQueued.id);
+
+        assertThat(oldQueuedReloaded.status).isEqualTo(JobStatus.FAILED);
+        assertThat(oldQueuedReloaded.errorMessage).contains("queued");
+        assertThat(oldQueuedReloaded.completedAt).isNotNull();
+
+        assertThat(freshQueuedReloaded.status).isEqualTo(JobStatus.QUEUED);
+        assertThat(freshQueuedReloaded.errorMessage).isNull();
+    }
+
+    @Test
+    @TestTransaction
     void detectStuckJobsKeepsStateWhenNoStuckJobsExist() {
         NistValidationJob.deleteAll();
 

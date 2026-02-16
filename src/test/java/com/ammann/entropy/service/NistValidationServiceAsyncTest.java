@@ -4,6 +4,7 @@ package com.ammann.entropy.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 import com.ammann.entropy.dto.NIST90BResultDTO;
 import com.ammann.entropy.dto.NISTSuiteResultDTO;
@@ -26,6 +27,7 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -78,6 +80,49 @@ class NistValidationServiceAsyncTest {
                                         "limit-user"))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Maximum concurrent validations reached");
+    }
+
+    @Test
+    void startAsyncSp80022ValidationDispatchesBackgroundWorkerAndPersistsResults() {
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(300);
+
+        UUID jobId =
+                QuarkusTransaction.requiringNew()
+                        .call(
+                                () -> {
+                                    clearAll();
+                                    service.setClientOverride(sp80022Success());
+                                    service.setSp80022MinBitsForTesting(64);
+                                    service.setSp80022MaxBytesForTesting(128);
+                                    seedEntropyEvents("sp80022-dispatch", start, 12);
+
+                                    return service.startAsyncSp80022Validation(
+                                            start, end, "token-123", "dispatch-user");
+                                });
+
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertSp80022JobCompleted(jobId));
+    }
+
+    @Test
+    void startAsyncSp80090bValidationDispatchesBackgroundWorkerAndPersistsResults() {
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(300);
+
+        UUID jobId =
+                QuarkusTransaction.requiringNew()
+                        .call(
+                                () -> {
+                                    clearAll();
+                                    service.setSp80090bOverride(sp80090bSuccess());
+                                    service.setSp80090bMaxBytesForTesting(100);
+                                    seedEntropyEvents("sp80090b-dispatch", start, 10);
+
+                                    return service.startAsyncSp80090bValidation(
+                                            start, end, "token-xyz", "dispatch-user");
+                                });
+
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertSp80090bJobCompleted(jobId));
     }
 
     @Test
@@ -394,6 +439,34 @@ class NistValidationServiceAsyncTest {
         persistJob(ValidationType.SP_800_22, JobStatus.QUEUED, start, end, user);
         persistJob(ValidationType.SP_800_90B, JobStatus.RUNNING, start, end, user);
         persistJob(ValidationType.SP_800_22, JobStatus.RUNNING, start, end, user);
+    }
+
+    private void assertSp80022JobCompleted(UUID jobId) {
+        QuarkusTransaction.requiringNew()
+                .run(
+                        () -> {
+                            NistValidationJob job = NistValidationJob.findById(jobId);
+                            assertThat(job).isNotNull();
+                            assertThat(job.status).isEqualTo(JobStatus.COMPLETED);
+                            assertThat(job.testSuiteRunId).isNotNull();
+                            assertThat(job.progressPercent).isEqualTo(100);
+                            assertThat(NistTestResult.count("testSuiteRunId", job.testSuiteRunId))
+                                    .isGreaterThan(0);
+                        });
+    }
+
+    private void assertSp80090bJobCompleted(UUID jobId) {
+        QuarkusTransaction.requiringNew()
+                .run(
+                        () -> {
+                            NistValidationJob job = NistValidationJob.findById(jobId);
+                            assertThat(job).isNotNull();
+                            assertThat(job.status).isEqualTo(JobStatus.COMPLETED);
+                            assertThat(job.assessmentRunId).isNotNull();
+                            assertThat(job.progressPercent).isEqualTo(100);
+                            assertThat(Nist90BResult.count("assessmentRunId", job.assessmentRunId))
+                                    .isGreaterThan(0);
+                        });
     }
 
     private NistValidationJob persistJob(

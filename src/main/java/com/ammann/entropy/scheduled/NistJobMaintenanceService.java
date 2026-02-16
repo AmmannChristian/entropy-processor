@@ -7,6 +7,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.transaction.Transactional;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
 import org.jboss.logging.Logger;
 
 /**
@@ -28,6 +30,9 @@ public class NistJobMaintenanceService {
 
     /** Maximum allowed runtime for a NIST validation job before it's considered stuck */
     private static final Duration MAX_JOB_RUNTIME = Duration.ofMinutes(30);
+
+    /** Maximum time a job may remain QUEUED before dispatch is considered failed */
+    private static final Duration MAX_QUEUE_WAIT = Duration.ofMinutes(30);
 
     /** Retention period for completed/failed jobs before automatic deletion */
     private static final Duration JOB_RETENTION_PERIOD = Duration.ofDays(7);
@@ -51,8 +56,9 @@ public class NistJobMaintenanceService {
     public void detectStuckJobs() {
         Instant now = Instant.now();
         Instant threshold = now.minus(MAX_JOB_RUNTIME);
+        Instant queuedThreshold = now.minus(MAX_QUEUE_WAIT);
 
-        long marked =
+        long markedRunning =
                 NistValidationJob.update(
                         "status = 'FAILED', "
                                 + "errorMessage = 'Job exceeded maximum runtime (30 minutes)', "
@@ -61,11 +67,32 @@ public class NistJobMaintenanceService {
                         now,
                         threshold);
 
-        if (marked > 0) {
+        long markedQueued =
+                NistValidationJob.update(
+                        "status = 'FAILED', "
+                                + "errorMessage = 'Job stayed queued for more than 10 minutes', "
+                                + "completedAt = ?1 "
+                                + "WHERE status = 'QUEUED' AND createdAt < ?2",
+                        now,
+                        queuedThreshold);
+
+        long totalMarked = markedRunning + markedQueued;
+        if (totalMarked > 0) {
+            // Get IDs of stuck jobs for detailed logging
+            List<UUID> stuckJobIds =
+                    NistValidationJob.find(
+                                    "status = 'FAILED' AND completedAt = ?1 AND (errorMessage LIKE"
+                                            + " '%queued%' OR errorMessage LIKE '%runtime%')",
+                                    now)
+                            .project(UUID.class)
+                            .list();
             LOG.warnf(
-                    "Watchdog: marked %d stuck NIST validation jobs as FAILED (runtime > 30"
-                            + " minutes)",
-                    marked);
+                    "Watchdog: marked %d stuck NIST validation jobs as FAILED (running=%d,"
+                            + " queued=%d) - JobIDs: %s",
+                    totalMarked,
+                    markedRunning,
+                    markedQueued,
+                    stuckJobIds);
         }
     }
 

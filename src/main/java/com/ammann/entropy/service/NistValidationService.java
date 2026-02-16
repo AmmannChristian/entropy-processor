@@ -25,8 +25,11 @@ import io.grpc.stub.MetadataUtils;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.grpc.GrpcClient;
+import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.scheduler.Scheduled;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Synchronization;
@@ -44,6 +47,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -89,6 +93,7 @@ public class NistValidationService {
     int sp80090bMaxBytes;
 
     @Inject TransactionSynchronizationRegistry transactionSynchronizationRegistry;
+    @Inject Instance<NistValidationService> selfReference;
 
     private final EntityManager em;
     private final MeterRegistry meterRegistry;
@@ -102,6 +107,15 @@ public class NistValidationService {
         this.em = em;
         this.meterRegistry = meterRegistry;
         this.oidcClientService = oidcClientService;
+    }
+
+    @PostConstruct
+    void logThreadPoolInfo() {
+        int parallelism = ForkJoinPool.commonPool().getParallelism();
+        int poolSize = ForkJoinPool.commonPool().getPoolSize();
+        LOG.infof(
+                "ForkJoinPool.commonPool() - parallelism=%d, poolSize=%d, availableProcessors=%d",
+                parallelism, poolSize, Runtime.getRuntime().availableProcessors());
     }
 
     void initMetrics() {
@@ -120,7 +134,8 @@ public class NistValidationService {
      * Analyzes entropy data from the previous hour.
      * Uses async job pattern for consistent tracking and progress visibility.
      */
-    @Scheduled(cron = "0 0 * * * ?")
+//    @Scheduled(cron = "0 0 * * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(cron = "0 */10 * * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     @Transactional
     public void runHourlyNISTValidation() {
         initMetrics();
@@ -149,7 +164,8 @@ public class NistValidationService {
      * nist.sp80090b.weekly-cron / SP80090B_WEEKLY_CRON.
      * Uses async job pattern for consistent tracking and progress visibility.
      */
-    @Scheduled(cron = "{nist.sp80090b.weekly-cron}")
+//    @Scheduled(cron = "{nist.sp80090b.weekly-cron}", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+    @Scheduled(cron = "0 */10 * * * ?", concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     @Transactional
     public void runWeeklyNIST90BValidation() {
         initMetrics();
@@ -893,10 +909,13 @@ public class NistValidationService {
                 "Created async NIST SP 800-22 validation job: jobId=%s window=%s..%s user=%s",
                 jobId, start, end, createdBy);
 
+        LOG.infof("Registering afterCompletion callback for SP 800-22 job %s", jobId);
         dispatchAfterCommit(
                 () ->
                         CompletableFuture.runAsync(
-                                () -> processSp80022ValidationJob(jobId, bearerToken)),
+                                () ->
+                                        runSp80022WorkerWithExtendedTimeout(
+                                                jobId, bearerToken)),
                 "SP 800-22",
                 jobId);
 
@@ -937,10 +956,13 @@ public class NistValidationService {
                 "Created async NIST SP 800-90B validation job: jobId=%s window=%s..%s user=%s",
                 jobId, start, end, createdBy);
 
+        LOG.infof("Registering afterCompletion callback for SP 800-90B job %s", jobId);
         dispatchAfterCommit(
                 () ->
                         CompletableFuture.runAsync(
-                                () -> processSp80090bValidationJob(jobId, bearerToken)),
+                                () ->
+                                        runSp80090bWorkerWithExtendedTimeout(
+                                                jobId, bearerToken)),
                 "SP 800-90B",
                 jobId);
 
@@ -967,14 +989,58 @@ public class NistValidationService {
                     @Override
                     public void afterCompletion(int status) {
                         if (status == jakarta.transaction.Status.STATUS_COMMITTED) {
+                            LOG.infof(
+                                    "Transaction committed, dispatching %s job %s to"
+                                            + " CompletableFuture",
+                                    validationType, jobId);
                             dispatch.run();
                         } else {
-                            LOG.warnf(
-                                    "Skipping %s job %s dispatch because transaction status=%d",
-                                    validationType, jobId, status);
+                            LOG.errorf(
+                                    "Transaction status=%d (not committed), skipping dispatch for"
+                                            + " %s job %s",
+                                    status, validationType, jobId);
                         }
                     }
                 });
+    }
+
+    private NistValidationService transactionalSelf() {
+        if (selfReference != null && selfReference.isResolvable()) {
+            return selfReference.get();
+        }
+        LOG.warn("NistValidationService self reference unavailable, falling back to direct invocation");
+        return this;
+    }
+
+    private void runSp80022WorkerWithExtendedTimeout(UUID jobId, String bearerToken) {
+        LOG.infof("Starting worker thread for SP 800-22 job %s", jobId);
+        QuarkusTransaction.requiringNew()
+                .timeout(1800)
+                .run(() -> transactionalSelf().processSp80022ValidationJob(jobId, bearerToken));
+    }
+
+    private void runSp80090bWorkerWithExtendedTimeout(UUID jobId, String bearerToken) {
+        LOG.infof("Starting worker thread for SP 800-90B job %s", jobId);
+        QuarkusTransaction.requiringNew()
+                .timeout(1800)
+                .run(() -> transactionalSelf().processSp80090bValidationJob(jobId, bearerToken));
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void markJobFailed(UUID jobId, String errorMessage) {
+        NistValidationJob job = NistValidationJob.findById(jobId);
+        if (job == null) {
+            LOG.errorf("Cannot mark job %s as FAILED - job not found", jobId);
+            return;
+        }
+        if (job.status == JobStatus.COMPLETED) {
+            LOG.warnf("Skipping FAILED update for job %s because status is already COMPLETED", jobId);
+            return;
+        }
+        job.status = JobStatus.FAILED;
+        job.errorMessage = errorMessage;
+        job.completedAt = Instant.now();
+        job.persist();
     }
 
     /**
@@ -987,7 +1053,7 @@ public class NistValidationService {
      * @param bearerToken Bearer token for gRPC calls
      */
     @Transactional
-    void processSp80022ValidationJob(UUID jobId, String bearerToken) {
+    public void processSp80022ValidationJob(UUID jobId, String bearerToken) {
         NistValidationJob job = NistValidationJob.findById(jobId);
         if (job == null) {
             LOG.errorf("SP 800-22 job %s not found", jobId);
@@ -1089,11 +1155,19 @@ public class NistValidationService {
 
         } catch (Exception e) {
             LOG.errorf(e, "SP 800-22 job %s failed", jobId);
-            job.status = JobStatus.FAILED;
-            job.errorMessage =
+            String errorMessage =
                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            job.status = JobStatus.FAILED;
+            job.errorMessage = errorMessage;
             job.completedAt = Instant.now();
-            job.persist();
+            try {
+                transactionalSelf().markJobFailed(jobId, errorMessage);
+            } catch (Exception markFailedException) {
+                LOG.errorf(
+                        markFailedException,
+                        "SP 800-22 job %s failed, and failed to persist FAILED status",
+                        jobId);
+            }
             recordFailureMetric();
         }
     }
@@ -1107,7 +1181,7 @@ public class NistValidationService {
      * @param bearerToken Bearer token for gRPC calls
      */
     @Transactional
-    void processSp80090bValidationJob(UUID jobId, String bearerToken) {
+    public void processSp80090bValidationJob(UUID jobId, String bearerToken) {
         NistValidationJob job = NistValidationJob.findById(jobId);
         if (job == null) {
             LOG.errorf("SP 800-90B job %s not found", jobId);
@@ -1186,11 +1260,19 @@ public class NistValidationService {
 
         } catch (Exception e) {
             LOG.errorf(e, "SP 800-90B job %s failed", jobId);
-            job.status = JobStatus.FAILED;
-            job.errorMessage =
+            String errorMessage =
                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            job.status = JobStatus.FAILED;
+            job.errorMessage = errorMessage;
             job.completedAt = Instant.now();
-            job.persist();
+            try {
+                transactionalSelf().markJobFailed(jobId, errorMessage);
+            } catch (Exception markFailedException) {
+                LOG.errorf(
+                        markFailedException,
+                        "SP 800-90B job %s failed, and failed to persist FAILED status",
+                        jobId);
+            }
             recordFailureMetric();
         }
     }
