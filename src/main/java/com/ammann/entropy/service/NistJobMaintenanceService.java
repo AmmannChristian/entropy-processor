@@ -1,5 +1,5 @@
 /* (C)2026 */
-package com.ammann.entropy.scheduled;
+package com.ammann.entropy.service;
 
 import com.ammann.entropy.model.NistValidationJob;
 import io.quarkus.scheduler.Scheduled;

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.ammann.entropy.enumeration.JobStatus;
 import com.ammann.entropy.enumeration.ValidationType;
 import com.ammann.entropy.model.NistValidationJob;
+import com.ammann.entropy.service.NistJobMaintenanceService;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -15,7 +16,8 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 class NistJobMaintenanceServiceTest {
 
-    @Inject NistJobMaintenanceService service;
+    @Inject
+    NistJobMaintenanceService service;
 
     @Test
     @TestTransaction
