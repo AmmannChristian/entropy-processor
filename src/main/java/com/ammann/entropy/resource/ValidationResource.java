@@ -11,6 +11,7 @@ import com.ammann.entropy.properties.ApiProperties;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import jakarta.annotation.security.RolesAllowed;
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -242,6 +243,7 @@ public class ValidationResource {
         @APIResponse(responseCode = "404", description = "Assessment run not found"),
         @APIResponse(responseCode = "500", description = "Internal server error")
     })
+    @Transactional
     public Response getEstimatorResults(
             @PathParam("assessmentRunId") UUID assessmentRunId,
             @QueryParam("testType") String testTypeParam) {

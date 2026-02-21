@@ -1,319 +1,171 @@
 # Data Model
 
-This document describes the persistent data model of the entropy-processor service, including the TimescaleDB schema, JPA entity mappings, and the rationale behind partitioning and indexing decisions. The content is structured for direct inclusion in an academic thesis chapter.
+This document describes the persistence model implemented by `entropy-processor`, based on:
 
-## Table of Contents
+1. `src/main/resources/db/migration/V1__initial_schema.sql`
+2. Entities under `src/main/java/com/ammann/entropy/model`
 
-1. [Overview](#overview)
-2. [Entity-Relationship Diagram](#entity-relationship-diagram)
-3. [Table Definitions](#table-definitions)
-   1. [entropy_data](#entropy_data)
-   2. [nist_test_results](#nist_test_results)
-   3. [nist_90b_results](#nist_90b_results)
-   4. [data_quality_reports](#data_quality_reports)
-4. [TimescaleDB Hypertable Design](#timescaledb-hypertable-design)
-5. [JPA Entity Mappings](#jpa-entity-mappings)
-6. [Query Patterns](#query-patterns)
+## 1. Persistence Approach
 
-## Overview
+- Database: PostgreSQL with TimescaleDB extension.
+- Schema lifecycle: Flyway migration at startup.
+- ORM: Hibernate ORM + Panache entities.
+- Hibernate schema mode: `validate` (migration SQL is the schema source of truth).
 
-The entropy-processor service persists data in a TimescaleDB-enabled PostgreSQL database. The schema comprises four tables, three of which are converted to TimescaleDB hypertables for time-series-optimized storage and querying. Schema management is handled by Flyway, which executes migration scripts on application startup. Hibernate ORM is configured in validate-only mode, ensuring that the application schema matches the Flyway-managed database at startup.
+## 2. Table Inventory
 
-The following diagram illustrates the relationships between the four tables and the external gRPC message types that serve as input sources.
+| Table | Role | Time-Series Type |
+|---|---|---|
+| `entropy_data` | Primary event storage for ingested entropy events | Hypertable |
+| `nist_test_results` | SP 800-22 per-test outcomes | Hypertable |
+| `nist_90b_results` | SP 800-90B aggregate assessment outcomes | Hypertable |
+| `nist_90b_estimator_results` | SP 800-90B estimator-level detail rows | Regular table |
+| `data_quality_reports` | Persisted quality reports | Regular table |
+| `nist_validation_jobs` | Async validation job tracking | Regular table |
+| `entropy_comparison_run` | Comparison run metadata | Regular table |
+| `entropy_comparison_result` | Source-level comparison outcomes | Hypertable |
 
-## Entity-Relationship Diagram
+## 3. Structural Relationships
 
 ```mermaid
-erDiagram
-    EntropyBatch ||--|{ TDCEvent : contains
-    EntropyBatch ||--o| EdgeMetrics : includes
-    TDCEvent ||--|| entropy_data : "mapped by GrpcMappingService"
-    entropy_data ||--o{ nist_test_results : "bitstream source"
-    entropy_data ||--o{ nist_90b_results : "bitstream source"
-    entropy_data ||--o{ data_quality_reports : "quality source"
+%%{init: {"flowchart": {"curve": "linear"}}}%%
+flowchart LR
+    ED[entropy_data]
+    NTR[nist_test_results]
+    N90[nist_90b_results]
+    NE[nist_90b_estimator_results]
+    JV[nist_validation_jobs]
+    CR[entropy_comparison_run]
+    RS[entropy_comparison_result]
 
-    entropy_data {
-        bigint id PK
-        varchar batch_id
-        varchar timestamp
-        bigint hw_timestamp_ns
-        bigint rpi_timestamp_us
-        bigint tdc_timestamp_ps
-        integer channel
-        bytea whitened_entropy
-        bigint sequence
-        timestamptz server_received PK
-        bigint network_delay_ms
-        timestamptz created_at
-        varchar source_address
-        double quality_score
-    }
-
-    nist_test_results {
-        bigint id PK
-        uuid test_suite_run_id
-        varchar test_name
-        varchar batch_id
-        boolean passed
-        double p_value
-        bigint bits_tested
-        bigint data_sample_size
-        timestamptz window_start
-        timestamptz window_end
-        timestamptz executed_at PK
-        jsonb details
-    }
-
-    nist_90b_results {
-        bigint id PK
-        varchar batch_id
-        double min_entropy
-        double shannon_entropy
-        double collision_entropy
-        double markov_entropy
-        double compression_entropy
-        boolean passed
-        bigint bits_tested
-        timestamptz window_start
-        timestamptz window_end
-        timestamptz executed_at PK
-        jsonb assessment_details
-    }
-
-    data_quality_reports {
-        bigint id PK
-        timestamptz report_timestamp
-        timestamptz window_start
-        timestamptz window_end
-        bigint total_events
-        integer missing_sequence_count
-        double clock_drift_us_per_hour
-        double average_network_delay_ms
-        double average_decay_interval_ms
-        boolean decay_rate_realistic
-        double overall_quality_score
-        text_array recommendations
-    }
+    ED -->|windowed bitstream source| NTR
+    ED -->|windowed bitstream source| N90
+    N90 -->|assessment_run_id| NE
+    JV -->|test_suite_run_id| NTR
+    JV -->|assessment_run_id| N90
+    CR -->|comparison_run_id| RS
 ```
 
-## Table Definitions
+Note: `nist_90b_estimator_results` intentionally does not enforce a DB foreign key to `nist_90b_results` because of Timescale/partitioning constraints documented in migration comments.
 
-### entropy_data
+## 4. Table-Level Design Notes
 
-The primary data table storing individual radioactive decay events captured by TDC hardware on Raspberry Pi edge gateways. Each row represents a single detected decay event.
+### 4.1 `entropy_data`
 
-| Column | Type | Nullable | Description |
-|---|---|---|---|
-| `id` | `BIGINT` | No | Auto-generated surrogate key (sequence increment: 50) |
-| `batch_id` | `VARCHAR(64)` | Yes | Gateway-assigned batch identifier linking events to their source batch |
-| `timestamp` | `VARCHAR(64)` | No | ISO-8601 string derived from the gateway ingestion microsecond timestamp (`rpi_timestamp_us`) |
-| `hw_timestamp_ns` | `BIGINT` | No | TDC hardware timestamp converted from picoseconds to nanoseconds; primary field for entropy interval calculations |
-| `rpi_timestamp_us` | `BIGINT` | Yes | Gateway ingestion timestamp in microseconds since Unix epoch (set when MQTT event is received at edge gateway) |
-| `tdc_timestamp_ps` | `BIGINT` | Yes | Raw TDC timestamp in picoseconds (original hardware precision) |
-| `channel` | `INTEGER` | Yes | TDC input channel that detected the decay event |
-| `whitened_entropy` | `BYTEA` | Yes | Gateway-provided per-event whitened entropy; expected length is 32 bytes (SHA-256 output of dual-stage whitening over canonical event bytes) |
-| `sequence` | `BIGINT` | No | Monotonically increasing sequence number for gap detection |
-| `server_received` | `TIMESTAMPTZ` | No | Server-side reception timestamp; serves as the TimescaleDB partition key |
-| `network_delay_ms` | `BIGINT` | Yes | Estimated delay between edge gateway ingestion and cloud server reception, in milliseconds |
-| `created_at` | `TIMESTAMPTZ` | No | Row insertion timestamp |
-| `source_address` | `VARCHAR(45)` | Yes | IP address of the edge gateway (IPv6-compatible length) |
-| `quality_score` | `DOUBLE PRECISION` | Yes | Per-event quality score in the range [0.0, 1.0]; default 1.0 |
+Purpose:
 
-**Primary Key**: Composite `(id, server_received)` as required by TimescaleDB for hypertable unique constraints that include the partition column.
+1. Stores one row per ingested entropy event.
+2. Supports time-window analytics and interval computations.
 
-**Indexes**:
+Key columns:
 
-| Index Name | Columns | Purpose |
-|---|---|---|
-| `idx_entropy_batch_id` | `batch_id` | Batch-level event lookup |
-| `idx_hw_timestamp_ns` | `hw_timestamp_ns` | Chronological event ordering for interval calculations |
-| `idx_sequence` | `sequence` | Sequence gap detection |
-| `idx_server_received` | `server_received` | Time-range queries (hypertable partition pruning) |
-| `idx_entropy_server_received_hw_timestamp_ns` | `(server_received, hw_timestamp_ns)` | Composite index for time-windowed queries with hardware timestamp sort |
+- `hw_timestamp_ns`, `server_received`, `sequence`, `whitened_entropy`, `source_address`.
 
-### nist_test_results
+Key behavior:
 
-Stores individual test outcomes from NIST SP 800-22 statistical test suite executions. Each row corresponds to one named test (for example, Frequency, Runs, or Serial) within a test-suite run identified by a shared UUID.
+- Converted to hypertable partitioned by `server_received` with 1-day chunks.
+- Composite primary key `(id, server_received)` to satisfy Timescale uniqueness constraints.
 
-| Column | Type | Nullable | Description |
-|---|---|---|---|
-| `id` | `BIGINT` | No | Auto-generated surrogate key |
-| `batch_id` | `VARCHAR(64)` | Yes | Entropy batch that provided the input data |
-| `test_suite_run_id` | `UUID` | No | Groups all tests belonging to a single suite execution |
-| `test_name` | `VARCHAR(100)` | No | NIST test identifier (for example, "Frequency (Monobit) Test") |
-| `passed` | `BOOLEAN` | No | Whether the test passed at the configured significance level |
-| `p_value` | `DOUBLE PRECISION` | Yes | Computed p-value; values at or above 0.01 indicate a pass |
-| `bits_tested` | `BIGINT` | Yes | Number of bits submitted to this individual test |
-| `data_sample_size` | `BIGINT` | Yes | Original sample size before any truncation |
-| `window_start` | `TIMESTAMPTZ` | No | Start of the entropy data time window under test |
-| `window_end` | `TIMESTAMPTZ` | No | End of the entropy data time window under test |
-| `executed_at` | `TIMESTAMPTZ` | No | Timestamp when this test was executed; serves as partition key |
-| `details` | `JSONB` | Yes | Additional test-specific output (sub-test statistics, failure reasons) |
+### 4.2 `nist_test_results`
 
-**Primary Key**: Composite `(id, executed_at)`
+Purpose:
 
-**Indexes**: `test_suite_run_id`, `executed_at`, `passed`
+1. Stores SP 800-22 individual test results.
+2. Supports chunked validation runs via `chunk_index` and `chunk_count`.
 
-### nist_90b_results
+Key columns:
 
-Stores entropy estimates produced by the NIST SP 800-90B assessment service. Each row records multiple estimator outputs for a single assessment run.
+- `test_suite_run_id`, `test_name`, `passed`, `p_value`, `executed_at`, `details`.
 
-| Column | Type | Nullable | Description |
-|---|---|---|---|
-| `id` | `BIGINT` | No | Auto-generated surrogate key |
-| `batch_id` | `VARCHAR(64)` | Yes | Entropy batch that provided the input data |
-| `min_entropy` | `DOUBLE PRECISION` | Yes | Min-entropy estimate in bits per symbol (most conservative bound) |
-| `passed` | `BOOLEAN` | No | Whether the overall assessment passed the minimum entropy threshold |
-| `bits_tested` | `BIGINT` | Yes | Number of bits submitted for assessment |
-| `window_start` | `TIMESTAMPTZ` | No | Start of the assessed time window |
-| `window_end` | `TIMESTAMPTZ` | No | End of the assessed time window |
-| `executed_at` | `TIMESTAMPTZ` | No | Assessment execution timestamp; serves as partition key |
-| `assessment_details` | `JSONB` | Yes | Full estimator-level output from the SP 800-90B service |
+Time-series behavior:
 
-**Primary Key**: Composite `(id, executed_at)`
+- Hypertable partitioned by `executed_at` (7-day chunk interval).
 
-**Indexes**: `executed_at`, `passed`
+### 4.3 `nist_90b_results`
 
-### data_quality_reports
+Purpose:
 
-Stores periodic composite quality assessment reports generated by the `DataQualityService`. This table is not a hypertable because report volume is low and time-based partitioning provides no meaningful benefit.
+1. Stores aggregate SP 800-90B outcomes per chunk/run.
+2. Provides run-level link via `assessment_run_id`.
 
-| Column | Type | Nullable | Description |
-|---|---|---|---|
-| `id` | `BIGINT` | No | Auto-generated surrogate key |
-| `report_timestamp` | `TIMESTAMPTZ` | No | When this report was generated |
-| `window_start` | `TIMESTAMPTZ` | No | Start of the analysed event window |
-| `window_end` | `TIMESTAMPTZ` | No | End of the analysed event window |
-| `total_events` | `BIGINT` | No | Number of events in the window |
-| `missing_sequence_count` | `INTEGER` | Yes | Count of missing sequence numbers (packet loss indicator) |
-| `clock_drift_us_per_hour` | `DOUBLE PRECISION` | Yes | Estimated clock drift rate in microseconds per hour |
-| `average_network_delay_ms` | `DOUBLE PRECISION` | Yes | Mean network delay across all events |
-| `average_decay_interval_ms` | `DOUBLE PRECISION` | Yes | Mean inter-event interval in milliseconds |
-| `decay_rate_realistic` | `BOOLEAN` | Yes | Whether the observed decay rate is plausible for entropy |
-| `overall_quality_score` | `DOUBLE PRECISION` | Yes | Composite quality score in [0.0, 1.0] |
-| `recommendations` | `TEXT[]` | Yes | Array of human-readable improvement suggestions |
+Key columns:
 
-**Primary Key**: `id`
+- `assessment_run_id`, `min_entropy`, `passed`, `assessment_details`, `executed_at`.
 
-**Indexes**: `report_timestamp`, `overall_quality_score`, `window_start`
+Time-series behavior:
 
-## TimescaleDB Hypertable Design
+- Hypertable partitioned by `executed_at` (7-day chunk interval).
 
-Three of the four tables are converted to TimescaleDB hypertables upon initial migration. The following table summarizes the partitioning strategy.
+### 4.4 `nist_90b_estimator_results`
 
-| Table | Partition Column | Chunk Interval | Rationale |
-|---|---|---|---|
-| `entropy_data` | `server_received` | 1 day | Expected ingestion rate of approximately 600 events per second produces approximately 50 million rows per day. Daily chunks balance query performance against management overhead. |
-| `nist_test_results` | `executed_at` | 7 days | NIST test suite executions occur at most once per hour. Weekly chunks match the low write frequency while maintaining efficient time-range queries. |
-| `nist_90b_results` | `executed_at` | 7 days | Entropy assessments execute alongside SP 800-22 tests. Weekly chunks align with the same low-frequency write pattern. |
+Purpose:
 
-TimescaleDB hypertables require that any unique or primary key constraint includes the partition column. This is why `entropy_data` uses a composite primary key `(id, server_received)` rather than a simple `id` primary key. The same constraint applies to the NIST result tables with their `(id, executed_at)` composite keys.
+1. Stores detailed estimator outputs (IID and NON_IID categories).
+2. Preserves semantics for non-entropy estimators via nullable `entropy_estimate`.
 
-### Chunk Management
+Key constraints:
 
-TimescaleDB automatically creates and manages chunks (child tables) based on the configured chunk interval. Older chunks can be compressed or dropped using TimescaleDB retention policies without affecting the application layer. The choice of `TIMESTAMPTZ` as the partition column type enables native partition pruning on time-range predicates, which directly benefits the windowed queries used throughout the service.
+- Unique key on `(assessment_run_id, test_type, estimator_name)`.
 
-## JPA Entity Mappings
+### 4.5 `data_quality_reports`
 
-The three primary tables are mapped to JPA entities that extend `PanacheEntity`, providing active record-style query methods. The mapping relationships are as follows.
+Purpose:
 
-### EntropyData
+- Stores quality assessment summaries generated by quality analysis logic.
 
-- **Table**: `entropy_data`
-- **Superclass**: `PanacheEntity` (provides auto-generated `id` field)
-- **Key Methods**:
-  - `findInTimeWindow(start, end)`: Returns events ordered by hardware timestamp within a server-received time window
-  - `calculateIntervals(start, end)`: Computes inter-event deltas using a native SQL window function (`LAG`)
-  - `calculateIntervalStats(start, end)`: Returns aggregated statistics (count, mean, stddev, min, max, median) via a single native query with a CTE
-  - `getRecentStatistics(eventCount)`: Computes statistical summary over the most recent N events
-  - `isValidForEntropy()`: Validates field constraints and temporal plausibility
+Key columns:
 
-### NistTestResult
+- `report_timestamp`, `window_start`, `window_end`, `total_events`, `overall_quality_score`, `recommendations`.
 
-- **Table**: `nist_test_results`
-- **Superclass**: `PanacheEntity`
-- **Key Methods**:
-  - `findByTestSuiteRun(runId)`: Returns all tests for a specific suite execution
-  - `findMostRecentSuiteRunId()`: Finds the UUID of the most recent test suite run
-  - `countFailures24h()`: Counts test failures in the last 24 hours
-  - `getPassRate(since)`: Calculates pass rate since a given timestamp
-  - `findFailures(days)`: Returns all failed tests in the last N days
-  - `countTestFailures(testName, since)`: Counts failures for a specific test
-  - `toDTO()`: Converts the entity to a `NISTTestResultDTO` for API responses
+### 4.6 `nist_validation_jobs`
 
-### Nist90BResult
+Purpose:
 
-- **Table**: `nist_90b_results`
-- **Superclass**: `PanacheEntity`
-- **Key Methods**:
-  - `toDTO()`: Converts the entity to a `NIST90BResultDTO` for API responses
+1. Tracks asynchronous validation workflow state.
+2. Supports API polling for progress and completion.
 
-## Query Patterns
+Lifecycle states encoded by constraint and enums:
 
-The service uses a combination of Panache JPQL queries and native SQL for different access patterns.
+- `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`.
 
-### Time-Windowed Event Retrieval
+Key columns:
 
-Used by `NistValidationService` and `KernelEntropyWriterService` to load events for validation and entropy extraction:
+- `validation_type`, `status`, `progress_percent`, `current_chunk`, `total_chunks`, `test_suite_run_id`, `assessment_run_id`.
 
-```sql
-SELECT * FROM entropy_data
-WHERE server_received BETWEEN :start AND :end
-ORDER BY hw_timestamp_ns
+### 4.7 Comparison Tables
+
+`entropy_comparison_run`:
+
+- One row per comparison execution, including sample sizes and mixed-source traceability metadata.
+
+`entropy_comparison_result`:
+
+- One or more rows per run, one per source type (`BASELINE`, `HARDWARE`, `MIXED`), with NIST and entropy metric outputs.
+- Implemented as hypertable partitioned by `created_at`.
+
+## 5. Data Flow Through Persistence
+
+```mermaid
+graph TD
+    Ingest[gRPC ingest] --> entropy_data
+    entropy_data --> N22[SP800-22 execution]
+    entropy_data --> N90[SP800-90B execution]
+
+    N22 --> nist_test_results
+    N90 --> nist_90b_results
+    N90 --> nist_90b_estimator_results
+
+    AsyncJobs[Validation job orchestration] --> nist_validation_jobs
+    Quality[Quality analysis] --> data_quality_reports
+    Compare[Comparison workflow] --> entropy_comparison_run
+    Compare --> entropy_comparison_result
 ```
 
-This query benefits from the `idx_entropy_server_received_hw_timestamp_ns` composite index and TimescaleDB chunk pruning on `server_received`.
+## 6. Query Boundary Observations
 
-### Inter-Event Interval Computation
+From entity and service code:
 
-Used by `EntropyResource` to supply interval data to the entropy statistics service:
-
-```sql
-SELECT hw_timestamp_ns - lag(hw_timestamp_ns)
-       OVER (ORDER BY hw_timestamp_ns) AS delta_ns
-FROM entropy_data
-WHERE server_received >= :start
-  AND server_received < :end
-```
-
-The `LAG` window function computes deltas in a single database pass, avoiding the need to transfer all events to the application layer.
-
-### Aggregated Interval Statistics
-
-Used by `EventsResource` to compute statistical summaries without transferring individual events:
-
-```sql
-WITH d AS (
-  SELECT hw_timestamp_ns - lag(hw_timestamp_ns)
-         OVER (ORDER BY hw_timestamp_ns) AS delta_ns
-  FROM entropy_data
-  WHERE server_received >= :start
-    AND server_received < :end
-)
-SELECT
-  count(delta_ns),
-  avg(delta_ns)::float8,
-  stddev_pop(delta_ns)::float8,
-  min(delta_ns),
-  max(delta_ns),
-  percentile_cont(0.5) WITHIN GROUP (ORDER BY delta_ns)::float8
-FROM d
-WHERE delta_ns > 0
-```
-
-This CTE-based query computes count, mean, population standard deviation, minimum, maximum, and median in a single database round-trip, leveraging PostgreSQL's built-in aggregate functions and ordered-set aggregates.
-
-### Batch Persistence Pattern
-
-The `EntropyDataPersistenceService` uses a flush/clear pattern to persist large batches without exhausting the JPA first-level cache:
-
-```
-for each event in batch:
-    em.persist(event)
-    if (count % 100 == 0):
-        em.flush()    // Write to database
-        em.clear()    // Release first-level cache
-em.flush()            // Final flush for remaining entities
-```
-
-This pattern is particularly important for the expected batch size of 1,840 events, where holding all entities in the persistence context simultaneously would cause significant memory pressure.
+1. Time-window access is the dominant access pattern (`server_received` and `executed_at`).
+2. Interval analytics are performed using native SQL window functions over `entropy_data`.
+3. Validation retrieval uses run identifiers (`test_suite_run_id`, `assessment_run_id`) for aggregation and API responses.
+4. Job tracking is independent from test-result tables and linked by run IDs.

@@ -1,42 +1,50 @@
+/* (C)2026 */
 package com.ammann.entropy.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import org.eclipse.microprofile.openapi.annotations.media.Schema;
-
 import java.time.Instant;
 import java.util.List;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
 
 @Schema(description = "Statistical analysis of intervals between decay events")
 @JsonInclude(JsonInclude.Include.NON_NULL)
+/**
+ * Descriptive statistics for inter-event intervals in a selected time window.
+ *
+ * @param count number of intervals used in the computation
+ * @param meanNs arithmetic mean interval in nanoseconds
+ * @param stdDevNs standard deviation in nanoseconds
+ * @param minNs minimum interval in nanoseconds
+ * @param maxNs maximum interval in nanoseconds
+ * @param medianNs median interval in nanoseconds
+ * @param coefficientOfVariation ratio of standard deviation to mean
+ * @param windowStart analysis window start timestamp
+ * @param windowEnd analysis window end timestamp
+ */
 public record IntervalStatisticsDTO(
-        @Schema(description = "Number of intervals analyzed")
-        Long count,
-
-        @Schema(description = "Mean interval in nanoseconds")
-        Double meanNs,
-
-        @Schema(description = "Standard deviation in nanoseconds")
-        Double stdDevNs,
-
-        @Schema(description = "Minimum interval in nanoseconds")
-        Long minNs,
-
-        @Schema(description = "Maximum interval in nanoseconds")
-        Long maxNs,
-
-        @Schema(description = "Median interval in nanoseconds")
-        Double medianNs,
-
+        @Schema(description = "Number of intervals analyzed") Long count,
+        @Schema(description = "Mean interval in nanoseconds") Double meanNs,
+        @Schema(description = "Standard deviation in nanoseconds") Double stdDevNs,
+        @Schema(description = "Minimum interval in nanoseconds") Long minNs,
+        @Schema(description = "Maximum interval in nanoseconds") Long maxNs,
+        @Schema(description = "Median interval in nanoseconds") Double medianNs,
         @Schema(description = "Coefficient of variation (stdDev/mean)")
-        Double coefficientOfVariation,
-
-        @Schema(description = "Start of analysis window")
-        Instant windowStart,
-
-        @Schema(description = "End of analysis window")
-        Instant windowEnd
-) {
-    public static IntervalStatisticsDTO fromIntervals(List<Long> intervals, Instant start, Instant end) {
+                Double coefficientOfVariation,
+        @Schema(description = "Start of analysis window") Instant windowStart,
+        @Schema(description = "End of analysis window") Instant windowEnd) {
+    /**
+     * Computes interval statistics from raw interval values and window bounds.
+     *
+     * <p>For null or empty inputs, all numeric fields are returned as zero while
+     * preserving the provided window metadata.
+     *
+     * @param intervals interval samples in nanoseconds
+     * @param start analysis window start timestamp
+     * @param end analysis window end timestamp
+     * @return populated statistics DTO
+     */
+    public static IntervalStatisticsDTO fromIntervals(
+            List<Long> intervals, Instant start, Instant end) {
         if (intervals == null || intervals.isEmpty()) {
             return new IntervalStatisticsDTO(0L, 0.0, 0.0, 0L, 0L, 0.0, 0.0, start, end);
         }
@@ -46,10 +54,8 @@ public record IntervalStatisticsDTO(
         long minNs = intervals.stream().mapToLong(Long::longValue).min().orElse(0);
         long maxNs = intervals.stream().mapToLong(Long::longValue).max().orElse(0);
 
-        double variance = intervals.stream()
-                .mapToDouble(x -> Math.pow(x - meanNs, 2))
-                .average()
-                .orElse(0.0);
+        double variance =
+                intervals.stream().mapToDouble(x -> Math.pow(x - meanNs, 2)).average().orElse(0.0);
         double stdDevNs = Math.sqrt(variance);
 
         List<Long> sorted = intervals.stream().sorted().toList();
@@ -63,6 +69,7 @@ public record IntervalStatisticsDTO(
 
         double cv = meanNs > 0 ? stdDevNs / meanNs : 0.0;
 
-        return new IntervalStatisticsDTO(count, meanNs, stdDevNs, minNs, maxNs, medianNs, cv, start, end);
+        return new IntervalStatisticsDTO(
+                count, meanNs, stdDevNs, minNs, maxNs, medianNs, cv, start, end);
     }
 }

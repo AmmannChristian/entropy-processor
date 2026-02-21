@@ -270,3 +270,56 @@ COMMENT ON COLUMN nist_validation_jobs.current_chunk IS 'Current chunk being pro
 COMMENT ON COLUMN nist_validation_jobs.total_chunks IS 'Total number of chunks to process (determined at job start)';
 COMMENT ON COLUMN nist_validation_jobs.test_suite_run_id IS 'Links to nist_test_results.test_suite_run_id for SP 800-22 jobs';
 COMMENT ON COLUMN nist_validation_jobs.assessment_run_id IS 'Links to nist_90b_results.assessment_run_id for SP 800-90B jobs';
+
+-- ============================================================
+-- Entropy Source Comparison Tables
+-- ============================================================
+CREATE SEQUENCE entropy_comparison_result_SEQ START WITH 1 INCREMENT BY 50;
+
+CREATE TABLE entropy_comparison_run (
+    id                         BIGSERIAL PRIMARY KEY,
+    run_timestamp              TIMESTAMPTZ NOT NULL,
+    status                     VARCHAR(20) NOT NULL CHECK (status IN ('RUNNING','COMPLETED','FAILED')),
+    -- Configured suite sample sizes for this run
+    sp80022_sample_size_bytes  INTEGER NOT NULL,
+    sp80090b_sample_size_bytes INTEGER NOT NULL,
+    metrics_sample_size_bytes  INTEGER NOT NULL,
+    -- Mixed source traceability
+    mixed_valid                BOOLEAN,
+    mixed_injection_timestamp  TIMESTAMPTZ,
+    -- Lifecycle
+    created_at                 TIMESTAMPTZ DEFAULT NOW(),
+    completed_at               TIMESTAMPTZ
+);
+CREATE INDEX idx_comparison_run_timestamp ON entropy_comparison_run(run_timestamp DESC);
+
+CREATE TABLE entropy_comparison_result (
+    id                  BIGINT NOT NULL DEFAULT nextval('entropy_comparison_result_SEQ'),
+    comparison_run_id   BIGINT NOT NULL REFERENCES entropy_comparison_run(id),
+    source_type         VARCHAR(20) NOT NULL CHECK (source_type IN ('BASELINE','HARDWARE','MIXED')),
+    -- Data availability
+    bytes_collected     INTEGER,
+    sp80022_bytes_used  INTEGER,
+    sp80090b_bytes_used INTEGER,
+    metrics_bytes_used  INTEGER,
+    -- NIST SP 800-22 (NULL = insufficient data or not attempted)
+    nist_22_pass_rate       DECIMAL(5,2),
+    nist_22_p_value_mean    DECIMAL(10,8),
+    nist_22_p_value_min     DECIMAL(10,8),
+    nist_22_executed_tests  INTEGER,
+    nist_22_skipped_tests   INTEGER,
+    nist_22_status          VARCHAR(30),  -- PASSED / FAILED / INSUFFICIENT_DATA / ERROR
+    -- NIST SP 800-90B (NULL = insufficient data or not attempted)
+    min_entropy_estimate    DECIMAL(10,8),
+    nist_90b_status         VARCHAR(30),  -- PASSED / FAILED / INSUFFICIENT_DATA / ERROR
+    -- Custom entropy metrics
+    shannon_entropy         DECIMAL(10,8),
+    renyi_entropy           DECIMAL(10,8),
+    sample_entropy          DECIMAL(10,8),
+    -- Partition column (required for hypertable)
+    created_at              TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT entropy_comparison_result_pkey PRIMARY KEY (id, created_at)
+);
+SELECT create_hypertable('entropy_comparison_result', 'created_at');
+CREATE INDEX idx_comparison_result_run    ON entropy_comparison_result(comparison_run_id);
+CREATE INDEX idx_comparison_result_source ON entropy_comparison_result(source_type);

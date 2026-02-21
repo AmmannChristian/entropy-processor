@@ -19,6 +19,7 @@ import com.ammann.entropy.grpc.proto.sp80090b.Sp80090bAssessmentResponse;
 import com.ammann.entropy.grpc.proto.sp80090b.Sp80090bAssessmentService;
 import com.ammann.entropy.grpc.proto.sp80090b.Sp80090bEstimatorResult;
 import com.ammann.entropy.model.EntropyData;
+import com.ammann.entropy.model.Nist90BEstimatorResult;
 import com.ammann.entropy.model.Nist90BResult;
 import com.ammann.entropy.model.NistTestResult;
 import com.ammann.entropy.model.NistValidationJob;
@@ -420,6 +421,7 @@ class NistValidationServiceAsyncTest {
     private void clearAll() {
         NistValidationJob.deleteAll();
         NistTestResult.deleteAll();
+        Nist90BEstimatorResult.deleteAll();
         Nist90BResult.deleteAll();
         EntropyData.deleteAll();
     }

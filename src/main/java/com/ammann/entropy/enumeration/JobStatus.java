@@ -4,7 +4,7 @@ package com.ammann.entropy.enumeration;
 /**
  * Current job status.
  * <p>
- * Transitions: QUEUED → RUNNING → (COMPLETED | FAILED)
+ * Expected transition sequence is QUEUED to RUNNING and then to either COMPLETED or FAILED.
  */
 public enum JobStatus {
     /** Job created but not yet started */

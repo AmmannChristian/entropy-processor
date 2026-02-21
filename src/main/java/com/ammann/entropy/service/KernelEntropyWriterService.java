@@ -12,8 +12,6 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -21,6 +19,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * Writes validated entropy bytes to the Linux kernel entropy pool.
@@ -70,6 +69,7 @@ public class KernelEntropyWriterService {
     private Counter writeFailuresCounter;
     private Counter writeRetriesCounter;
     private final AtomicLong totalBytesWritten = new AtomicLong(0); // Thread-safe
+    private volatile Instant lastSuccessfulInjectionTimestamp = null;
     private volatile boolean initialized = false;
 
     /**
@@ -152,8 +152,7 @@ public class KernelEntropyWriterService {
             Instant now = Instant.now();
             Instant start = now.minus(15, ChronoUnit.SECONDS);
 
-            List<EntropyData> recentEvents =
-                    EntropyData.findInTimeWindow(start, now);
+            List<EntropyData> recentEvents = EntropyData.findInTimeWindow(start, now);
 
             if (recentEvents.isEmpty()) {
                 Log.debug("No recent entropy events - skipping kernel write");
@@ -174,6 +173,7 @@ public class KernelEntropyWriterService {
             if (success) {
                 totalBytesWritten.addAndGet(entropyBytes.length);
                 incrementCounter(bytesWrittenCounter, entropyBytes.length);
+                lastSuccessfulInjectionTimestamp = Instant.now();
                 Log.debug(
                         "Wrote "
                                 + entropyBytes.length
@@ -332,5 +332,10 @@ public class KernelEntropyWriterService {
      */
     public boolean isOperational() {
         return initialized && writerEnabled;
+    }
+
+    /** Last successful write timestamp, or null if nothing has been written yet. */
+    public Instant getLastSuccessfulInjectionTimestamp() {
+        return lastSuccessfulInjectionTimestamp;
     }
 }

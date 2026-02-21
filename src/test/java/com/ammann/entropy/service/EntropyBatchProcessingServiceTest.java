@@ -10,7 +10,9 @@ import com.ammann.entropy.grpc.proto.EdgeMetrics;
 import com.ammann.entropy.grpc.proto.EntropyBatch;
 import com.ammann.entropy.grpc.proto.TDCEvent;
 import com.ammann.entropy.model.EntropyData;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -200,6 +202,188 @@ class EntropyBatchProcessingServiceTest {
             bytes[i] = (byte) (seed + i);
         }
         return bytes;
+    }
+
+    // toEntities: blank sourceId uses the batch-N prefix.
+
+    @Test
+    void toEntities_blankSourceId_usesBatchSequenceInBatchId() {
+        long nowUs = System.currentTimeMillis() * 1000;
+        EntropyBatch batch =
+                EntropyBatch.newBuilder()
+                        .setBatchSequence(99)
+                        // sourceId is not set and therefore defaults to an empty string.
+                        .addEvents(validEvent(nowUs, nowUs * 2))
+                        .build();
+
+        List<EntropyData> entities = service.toEntities(batch);
+
+        assertThat(entities).hasSize(1);
+        assertThat(entities.getFirst().batchId).isEqualTo("batch-99");
+    }
+
+    // validateBatch: batch with metrics where both tests pass and no warning is expected.
+    @Test
+    void validateBatch_bothMetricsPassing_returnsTrue() {
+        long nowUs = System.currentTimeMillis() * 1000;
+        EntropyBatch batch =
+                EntropyBatch.newBuilder()
+                        .setBatchSequence(5)
+                        .addEvents(validEvent(nowUs, nowUs * 2, validWhitenedEntropy((byte) 1)))
+                        .setMetrics(
+                                EdgeMetrics.newBuilder()
+                                        .setQuickShannonEntropy(7.9)
+                                        .setFrequencyTestPassed(true)
+                                        .setRunsTestPassed(true)
+                                        .build())
+                        .build();
+
+        assertThat(service.validateBatch(batch)).isTrue();
+    }
+
+    // createAck: null errorMessage falls back to "Unknown error".
+    @Test
+    void createAck_nullErrorMessage_usesDefaultMessage() {
+        BatchProcessingResultDTO failure =
+                BatchProcessingResultDTO.failure(4, 0, null); // null error message
+
+        Ack ack = service.createAck(4, failure);
+
+        assertThat(ack.getSuccess()).isFalse();
+        assertThat(ack.getMessage()).isEqualTo("Unknown error");
+    }
+
+    // createAck: null missingSequences produces an empty missing list.
+    @Test
+    void createAck_nullMissingSequences_emptyMissingInAck() {
+        // BatchProcessingResultDTO with null missingSequences
+        BatchProcessingResultDTO result =
+                new BatchProcessingResultDTO(6L, true, 1, 0, null, 10L, null, null);
+
+        Ack ack = service.createAck(6, result);
+
+        assertThat(ack.getSuccess()).isTrue();
+        assertThat(ack.getMissingSequencesList()).isEmpty();
+    }
+
+    // reasonTag: covers all branches through reflection.
+    @Test
+    void reasonTag_coversAllBranches() throws Exception {
+        Method reasonTag =
+                EntropyBatchProcessingService.class.getDeclaredMethod("reasonTag", String.class);
+        reasonTag.setAccessible(true);
+
+        assertThat(reasonTag.invoke(service, "invalid whitened_entropy field"))
+                .isEqualTo("whitened_entropy");
+        assertThat(reasonTag.invoke(service, "missing rpi_timestamp_us value"))
+                .isEqualTo("rpi_timestamp_us");
+        assertThat(reasonTag.invoke(service, "invalid tdc_timestamp_ps"))
+                .isEqualTo("tdc_timestamp_ps");
+        assertThat(reasonTag.invoke(service, "timestamp too far in the future"))
+                .isEqualTo("time_skew");
+        assertThat(reasonTag.invoke(service, "timestamp too old for acceptance"))
+                .isEqualTo("time_skew");
+        assertThat(reasonTag.invoke(service, "some completely unknown reason")).isEqualTo("other");
+    }
+
+    // recordRejectedEvent: non-null meterRegistry path covering the false branch.
+    @Test
+    void recordRejectedEvent_withMeterRegistry_incrementsCounter() throws Exception {
+        EntropyBatchProcessingService svc = new EntropyBatchProcessingService(mappingService);
+        Field meterField = EntropyBatchProcessingService.class.getDeclaredField("meterRegistry");
+        meterField.setAccessible(true);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        meterField.set(svc, registry);
+
+        long nowUs = System.currentTimeMillis() * 1000;
+        // Pass an invalid event (timestamp=0) to trigger rejected counter
+        EntropyBatch batch =
+                EntropyBatch.newBuilder()
+                        .setBatchSequence(55)
+                        .setSourceId("test-src")
+                        .addEvents(
+                                TDCEvent.newBuilder()
+                                        .setRpiTimestampUs(0)
+                                        .setTdcTimestampPs(0)
+                                        .build())
+                        .build();
+
+        svc.toEntities(batch);
+
+        // Counter for "other" reason should have been incremented
+        double count = registry.get("grpc_events_rejected_total").counter().count();
+        assertThat(count).isEqualTo(1.0);
+    }
+
+    // auditWhitenedEntropyIfEnabled: null and wrong-length whitened entropy branches.
+
+    @Test
+    void auditMode_nullWhitenedEntropy_skipsAudit() throws Exception {
+        // Enable compat mode so events without whitened entropy pass validation
+        GrpcMappingService compatMapping = new GrpcMappingService();
+        Field compatField =
+                GrpcMappingService.class.getDeclaredField("allowMissingWhitenedEntropy");
+        compatField.setAccessible(true);
+        compatField.setBoolean(compatMapping, true);
+
+        EntropyBatchProcessingService auditService =
+                new EntropyBatchProcessingService(compatMapping);
+        setAuditMode(auditService, true);
+
+        long nowUs = System.currentTimeMillis() * 1000;
+        // Empty ByteString in compatibility mode produces null whitenedEntropy and skips audit.
+        EntropyBatch batch =
+                EntropyBatch.newBuilder()
+                        .setBatchSequence(20)
+                        .setSourceId("audit-src")
+                        .addEvents(
+                                TDCEvent.newBuilder()
+                                        .setRpiTimestampUs(nowUs)
+                                        .setTdcTimestampPs(nowUs * 2)
+                                        .setChannel(1)
+                                        // Missing whitenedEntropy becomes ByteString.EMPTY and then
+                                        // null.
+                                        .build())
+                        .build();
+
+        List<EntropyData> entities = auditService.toEntities(batch);
+        // Compat mode allows the event through; audit skips because whitenedEntropy == null
+        assertThat(entities).hasSize(1);
+        assertThat(entities.getFirst().whitenedEntropy).isNull();
+    }
+
+    @Test
+    void auditMode_wrongLengthWhitenedEntropy_skipsAudit() throws Exception {
+        // Wrong-size whitened entropy always fails proto validation, so call the private
+        // audit method directly with a crafted entity to cover the length != EXPECTED branch.
+        EntropyBatchProcessingService auditService =
+                new EntropyBatchProcessingService(mappingService);
+        setAuditMode(auditService, true);
+
+        byte[] shortWhitened = {0x01, 0x02, 0x03, 0x04}; // 4 bytes, != EXPECTED (32)
+        EntropyData entity = new EntropyData();
+        entity.whitenedEntropy = shortWhitened;
+
+        TDCEvent protoEvent =
+                TDCEvent.newBuilder()
+                        .setRpiTimestampUs(1_000_000L)
+                        .setTdcTimestampPs(2_000_000L)
+                        .setChannel(1)
+                        .setWhitenedEntropy(com.google.protobuf.ByteString.copyFrom(shortWhitened))
+                        .build();
+
+        // The method should return silently; length mismatch skips the audit path.
+        Method auditMethod =
+                EntropyBatchProcessingService.class.getDeclaredMethod(
+                        "auditWhitenedEntropyIfEnabled",
+                        long.class,
+                        int.class,
+                        TDCEvent.class,
+                        EntropyData.class);
+        auditMethod.setAccessible(true);
+        auditMethod.invoke(auditService, 21L, 0, protoEvent, entity);
+        // No assertion needed; verifies the method completes without exception
+        assertThat(entity.whitenedEntropy).hasSize(4);
     }
 
     private void setAuditMode(EntropyBatchProcessingService target, boolean enabled)

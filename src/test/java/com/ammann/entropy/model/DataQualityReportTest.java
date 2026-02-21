@@ -1,13 +1,13 @@
+/* (C)2026 */
 package com.ammann.entropy.model;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.ammann.entropy.dto.DataQualityReportDTO;
+import java.time.Instant;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-
-import java.time.Instant;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 class DataQualityReportTest {
 
@@ -80,7 +80,8 @@ class DataQualityReportTest {
             report.calculateQualityScore();
 
             // 0.95 * 0.85 = 0.8075
-            assertThat(report.overallQualityScore).isCloseTo(0.8075, org.assertj.core.data.Offset.offset(0.001));
+            assertThat(report.overallQualityScore)
+                    .isCloseTo(0.8075, org.assertj.core.data.Offset.offset(0.001));
         }
 
         @Test
@@ -107,14 +108,15 @@ class DataQualityReportTest {
         void cumulativePenalties() {
             DataQualityReport report = createReport();
             report.totalEvents = 1000L;
-            report.missingSequenceCount = 100; // 10% loss -> 0.9
-            report.clockDriftUsPerHour = 15.0; // -> *0.95
-            report.decayRateRealistic = false; // -> *0.9
+            report.missingSequenceCount = 100; // 10 percent loss applies a 0.9 multiplier.
+            report.clockDriftUsPerHour = 15.0; // Applies a 0.95 drift multiplier.
+            report.decayRateRealistic = false; // Applies a 0.9 decay-rate multiplier.
 
             report.calculateQualityScore();
 
             // 0.9 * 0.95 * 0.9 = 0.7695
-            assertThat(report.overallQualityScore).isCloseTo(0.7695, org.assertj.core.data.Offset.offset(0.001));
+            assertThat(report.overallQualityScore)
+                    .isCloseTo(0.7695, org.assertj.core.data.Offset.offset(0.001));
         }
 
         @Test

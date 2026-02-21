@@ -259,7 +259,7 @@ class NistValidationServiceTest {
         Instant start = Instant.now().minusSeconds(60);
         Instant end = Instant.now();
 
-        // Create 2 chunks × 15 tests = 30 DB rows, all passed
+        // Create 2 chunks with 15 tests each, resulting in 30 database rows; all pass.
         String[] testNames = {
             "frequency_monobit", "block_frequency", "runs", "longest_run",
             "rank", "dft", "non_overlapping_template", "overlapping_template",
@@ -285,7 +285,7 @@ class NistValidationServiceTest {
         assertThat(dto.passedTests()).isEqualTo(15);
         assertThat(dto.failedTests()).isEqualTo(0);
         assertThat(dto.overallPassRate()).isEqualTo(1.0);
-        assertThat(dto.datasetSize()).isEqualTo(2000000L); // 2 chunks × 1M bits
+        assertThat(dto.datasetSize()).isEqualTo(2000000L); // 2 chunks with 1 million bits each
 
         // Verify all test results are passed
         assertThat(dto.tests()).allMatch(test -> test.passed());
@@ -397,7 +397,7 @@ class NistValidationServiceTest {
 
         assertThat(dto).isNotNull();
         assertThat(dto.totalTests()).isEqualTo(1);
-        // Verify datasetSizeBits = sum of unique chunks (3 × 1M)
+        // Verify datasetSizeBits equals the sum of unique chunks (3 x 1 million).
         assertThat(dto.datasetSize()).isEqualTo(3000000L);
     }
 
@@ -568,6 +568,7 @@ class NistValidationServiceTest {
     private void seedEntropyEvents(String batchId) {
         EntropyData.deleteAll();
         NistTestResult.deleteAll();
+        Nist90BEstimatorResult.deleteAll();
         Nist90BResult.deleteAll();
 
         // Test fixtures use canonical 32-byte chunks to mirror gateway contract.
@@ -808,13 +809,11 @@ class NistValidationServiceTest {
         assertThat(totalEstimators).isEqualTo(5);
 
         // Verify 3 Non-IID estimators
-        long nonIidCount =
-                Nist90BEstimatorResult.count("testType", TestType.NON_IID);
+        long nonIidCount = Nist90BEstimatorResult.count("testType", TestType.NON_IID);
         assertThat(nonIidCount).isEqualTo(3);
 
         // Verify 2 IID tests
-        long iidCount =
-                Nist90BEstimatorResult.count("testType", TestType.IID);
+        long iidCount = Nist90BEstimatorResult.count("testType", TestType.IID);
         assertThat(iidCount).isEqualTo(2);
 
         // Verify aggregate result has min entropy and passed status

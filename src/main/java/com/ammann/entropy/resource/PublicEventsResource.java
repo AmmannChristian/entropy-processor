@@ -28,6 +28,12 @@ import org.jboss.logging.Logger;
 @Tag(name = "Public API", description = "Unauthenticated public status endpoints")
 @Produces(MediaType.APPLICATION_JSON)
 @PermitAll
+/**
+ * Public read-only resource exposing minimal recent activity data.
+ *
+ * <p>This resource intentionally returns a restricted event projection to provide
+ * operational visibility without exposing sensitive entropy payload fields.
+ */
 public class PublicEventsResource {
 
     private static final Logger LOG = Logger.getLogger(PublicEventsResource.class);
@@ -51,6 +57,15 @@ public class PublicEventsResource {
                                         @Schema(implementation = PublicActivityResponseDTO.class))),
         @APIResponse(responseCode = "500", description = "Internal server error")
     })
+    /**
+     * Returns recent event activity using a bounded, unauthenticated query.
+     *
+     * <p>The response is limited to a small maximum size and contains only safe,
+     * public-facing fields for each event.
+     *
+     * @param count requested number of events, constrained to a predefined safe range
+     * @return HTTP response containing a {@link PublicActivityResponseDTO} payload
+     */
     public Response getRecentActivity(
             @Parameter(description = "Number of recent events to return (max 10, default 5)")
                     @QueryParam("count")

@@ -1,366 +1,118 @@
 # API Reference
 
-This document specifies the REST and gRPC interfaces exposed by the entropy-processor service. All REST endpoints are versioned under `/api/v1` and produce JSON responses. gRPC services are defined by Protocol Buffer specifications in `src/main/proto/`.
+This document describes the interfaces exposed by `entropy-processor` and the external RPC interfaces it consumes.
 
-## Table of Contents
+## 1. REST API
 
-1. [REST API](#rest-api)
-   1. [Authentication](#authentication)
-   2. [Entropy Endpoints](#entropy-endpoints)
-   3. [Event Endpoints](#event-endpoints)
-   4. [Error Responses](#error-responses)
-2. [gRPC Services](#grpc-services)
-   1. [EntropyStream Service](#entropystream-service)
-   2. [NIST SP 800-22 Service (Client)](#nist-sp-800-22-service-client)
-   3. [NIST SP 800-90B Service (Client)](#nist-sp-800-90b-service-client)
-   4. [gRPC Health Service](#grpc-health-service)
-3. [Protocol Buffer Message Types](#protocol-buffer-message-types)
+Base path: `/api/v1`
 
-## REST API
+Security model from code/config:
 
-### Authentication
+1. `/api/*` requires authenticated access by default.
+2. Selected methods use `@PermitAll`.
+3. Most protected endpoints require `ADMIN_ROLE` or `USER_ROLE`.
+4. Administrative endpoint requires `ADMIN_ROLE` only.
 
-All REST API endpoints under `/api/*` require a valid Bearer token in the `Authorization` header. The token may be either a JWT or an opaque token issued by the configured ZITADEL identity provider. Role-based access is enforced as follows:
+## 2. REST Endpoints by Resource
 
-| Role | Access Level |
-|---|---|
-| `ADMIN_ROLE` | Full access to all endpoints |
-| `USER_ROLE` | Full access to all endpoints |
+### 2.1 EntropyResource
 
-Endpoints annotated with `@PermitAll` are accessible without authentication.
-
-### Entropy Endpoints
-
-All entropy endpoints are served by `EntropyResource` at the base path `/api/v1`.
-
-#### GET /api/v1/entropy/shannon
-
-Calculates Shannon entropy from radioactive decay intervals using a histogram-based probability distribution.
-
-| Parameter | Type | Default | Description |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-| `bucketSize` | Query (int) | 1000 | Histogram bucket size in nanoseconds (1000 = 1µs) |
+| GET | `/entropy/shannon` | `ADMIN_ROLE`, `USER_ROLE` | Shannon entropy over a time window |
+| GET | `/entropy/renyi` | `ADMIN_ROLE`, `USER_ROLE` | Renyi entropy over a time window |
+| GET | `/entropy/comprehensive` | `ADMIN_ROLE`, `USER_ROLE` | Shannon, Renyi, Sample, Approximate entropy bundle |
+| GET | `/entropy/window` | `ADMIN_ROLE`, `USER_ROLE` | Time-window entropy analysis |
+| GET | `/entropy/nist/latest` | `PermitAll` | Latest SP 800-22 aggregate result |
+| POST | `/entropy/nist/validate` | `ADMIN_ROLE`, `USER_ROLE` | Queue async SP 800-22 validation job |
+| POST | `/entropy/nist/validate90b` | `ADMIN_ROLE`, `USER_ROLE` | Queue async SP 800-90B validation job |
+| GET | `/entropy/nist/validate/status/{jobId}` | `ADMIN_ROLE`, `USER_ROLE` | Read async validation job status |
+| GET | `/entropy/nist/validate/result/{jobId}` | `ADMIN_ROLE`, `USER_ROLE` | Read SP 800-22 job result |
+| GET | `/entropy/nist/validate90b/result/{jobId}` | `ADMIN_ROLE`, `USER_ROLE` | Read SP 800-90B job result |
 
-**Response** (200): `ShannonEntropyResponseDTO`
+### 2.2 EventsResource
 
-| Field | Type | Description |
-|---|---|---|
-| `shannonEntropy` | Double | Shannon entropy in bits |
-| `sampleCount` | Long | Number of intervals analyzed |
-| `windowStart` | Instant | Start of analysis window |
-| `windowEnd` | Instant | End of analysis window |
-| `bucketSizeNs` | Integer | Histogram bucket size in nanoseconds |
-
-#### GET /api/v1/entropy/renyi
-
-Calculates Renyi entropy with a configurable alpha parameter. When alpha approaches 1.0, the computation falls back to Shannon entropy. Alpha equal to 2.0 yields collision entropy.
-
-| Parameter | Type | Default | Description |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-| `bucketSize` | Query (int) | 1000 | Histogram bucket size in nanoseconds (1000 = 1µs) |
-| `alpha` | Query (double) | 2.0 | Renyi parameter (must be positive) |
+| GET | `/events/recent` | `ADMIN_ROLE`, `USER_ROLE` | Paginated/filtered event list (legacy `count` also supported) |
+| GET | `/events/count` | `ADMIN_ROLE`, `USER_ROLE` | Event count in time window |
+| GET | `/events/statistics` | `ADMIN_ROLE`, `USER_ROLE` | Aggregate interval statistics |
+| GET | `/events/intervals` | `ADMIN_ROLE`, `USER_ROLE` | Interval statistics view |
+| GET | `/events/quality` | `ADMIN_ROLE`, `USER_ROLE` | Data quality assessment report |
+| GET | `/events/rate` | `PermitAll` | Event rate versus configured expected rate |
+| GET | `/events/interval-histogram` | `ADMIN_ROLE`, `USER_ROLE` | Histogram of inter-event intervals |
 
-**Response** (200): `RenyiEntropyResponseDTO`
+### 2.3 PublicEventsResource
 
-| Field | Type | Description |
-|---|---|---|
-| `renyiEntropy` | Double | Renyi entropy in bits |
-| `alpha` | Double | Alpha parameter used |
-| `sampleCount` | Long | Number of intervals analyzed |
-| `windowStart` | Instant | Start of analysis window |
-| `windowEnd` | Instant | End of analysis window |
-| `bucketSizeNs` | Integer | Histogram bucket size in nanoseconds |
-
-#### GET /api/v1/entropy/comprehensive
-
-Calculates all four entropy measures: Shannon, Renyi (alpha=2), Sample Entropy, and Approximate Entropy.
-
-| Parameter | Type | Default | Description |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-| `bucketSize` | Query (int) | 1000 | Histogram bucket size in nanoseconds for Shannon/Renyi (1000 = 1us) |
+| GET | `/public/recent-activity` | `PermitAll` | Public minimal recent activity projection |
 
-**Response** (200): `EntropyStatisticsDTO`
+### 2.4 ValidationResource
 
-| Field | Type | Description |
-|---|---|---|
-| `shannonEntropy` | Double | Shannon entropy in bits |
-| `renyiEntropy` | Double | Renyi entropy in bits (alpha=2.0) |
-| `sampleEntropy` | Double | Sample entropy (dimensionless) |
-| `approximateEntropy` | Double | Approximate entropy (dimensionless) |
-| `sampleCount` | Long | Number of samples |
-| `windowStart` | Instant | Analysis window start |
-| `windowEnd` | Instant | Analysis window end |
-| `processingTimeNs` | Long | Processing time in nanoseconds |
-| `basicStats` | Object | Basic statistical measures of the interval data |
-
-#### GET /api/v1/entropy/window
-
-Performs a time-window analysis with all available entropy metrics. Functionally identical to the comprehensive endpoint but with mandatory time window parameters.
-
-| Parameter | Type | Required | Description |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Yes | Start of time window (ISO-8601) |
-| `to` | Query (string) | Yes | End of time window (ISO-8601) |
-| `bucketSize` | Query (int) | No | Histogram bucket size in nanoseconds for Shannon/Renyi (default: 1000 = 1us) |
+| GET | `/validation/jobs` | `ADMIN_ROLE`, `USER_ROLE` | Paginated validation jobs |
+| GET | `/validation/test-results` | `ADMIN_ROLE`, `USER_ROLE` | Paginated SP 800-22 test rows |
+| GET | `/validation/90b-results` | `ADMIN_ROLE`, `USER_ROLE` | Paginated SP 800-90B result rows |
+| GET | `/validation/90b-results/{assessmentRunId}/estimators` | `ADMIN_ROLE`, `USER_ROLE` | Estimator-level 90B results, optional `testType` filter |
 
-**Response** (200): `EntropyStatisticsDTO` (same schema as comprehensive endpoint)
+### 2.5 ComparisonResource
 
-#### GET /api/v1/entropy/nist/latest
-
-Returns the most recent NIST SP 800-22 test suite results. This endpoint is publicly accessible (`@PermitAll`).
-
-**Response** (200): `NISTSuiteResultDTO`
-
-| Field | Type | Description |
-|---|---|---|
-| `tests` | List | Individual test results for all 15 NIST tests |
-| `totalTests` | Integer | Total number of tests executed |
-| `passedTests` | Integer | Number of tests that passed |
-| `failedTests` | Integer | Number of tests that failed |
-| `overallPassRate` | Double | Overall pass rate (0.0 to 1.0) |
-| `uniformityCheck` | Boolean | Whether p-value distribution is uniform |
-| `executedAt` | Instant | Timestamp of suite execution |
-| `datasetSize` | Long | Size of data sample tested (bits) |
-| `dataWindow` | Object | Time window of source data |
-
-#### POST /api/v1/entropy/nist/validate
-
-Manually triggers NIST SP 800-22 and SP 800-90B validation for a specified time window. Requires `ADMIN_ROLE` or `USER_ROLE`.
-
-| Parameter | Type | Default | Description |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of validation window (ISO-8601) |
-| `to` | Query (string) | Now | End of validation window (ISO-8601) |
+| GET | `/comparison/results` | `ADMIN_ROLE`, `USER_ROLE` | Recent comparison runs |
+| GET | `/comparison/{runId}/results` | `ADMIN_ROLE`, `USER_ROLE` | Source-level results for one run |
+| GET | `/comparison/summary` | `ADMIN_ROLE`, `USER_ROLE` | Summary of latest run |
+| POST | `/comparison/trigger` | `ADMIN_ROLE` | Trigger asynchronous comparison run |
 
-The `Authorization` header bearer token is propagated to the NIST gRPC services for authentication.
+### 2.6 AdministrationResource
 
-**Response** (200): `NISTSuiteResultDTO`
-
-**Response** (503): `ErrorResponseDTO` when the NIST service is unavailable
-
-### Event Endpoints
-
-All event endpoints are served by `EventsResource` at the base path `/api/v1`.
-
-#### GET /api/v1/events/recent
-
-Returns the most recent N entropy events from the radioactive decay source. This endpoint is publicly accessible (`@PermitAll`).
-
-| Parameter | Type | Default | Description |
+| Method | Path | Access | Purpose |
 |---|---|---|---|
-| `count` | Query (int) | 100 | Number of recent events to return (maximum 10,000) |
+| GET | `/system/config` | `ADMIN_ROLE` | Returns `501 Not Implemented` placeholder |
 
-**Response** (200): `RecentEventsResponseDTO`
+## 3. gRPC Interfaces
 
-#### GET /api/v1/events/count
+### 3.1 Exposed by entropy-processor
 
-Returns the number of entropy events in a specified time window.
+Service: `entropy.EntropyStream`
 
-| Parameter | Type | Default | Description |
+| RPC | Type | Access Annotation in Service | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
+| `StreamEntropy` | Bidirectional streaming | `@RolesAllowed("GATEWAY_ROLE")` | Batch ingestion + acknowledgements |
+| `SubscribeBatches` | Server streaming | `@RolesAllowed({"ADMIN_ROLE", "USER_ROLE"})` | Broadcast of ingested batches |
+| `Control` | Bidirectional streaming | `@Authenticated` | Control-plane messages (`Hello`, `ConfigUpdate`, `HealthReport`, `Ping/Pong`) |
 
-**Response** (200): `EventCountResponseDTO`
+Global gRPC auth interception is implemented by `OidcAuthInterceptor`.
 
-#### GET /api/v1/events/statistics
+### 3.2 Consumed by entropy-processor
 
-Returns aggregated statistical measures (mean, standard deviation, min, max, median, coefficient of variation) for inter-event intervals in a time window.
-
-| Parameter | Type | Default | Description |
+| External Service | RPC | Used By | Purpose |
 |---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
+| `nist.sp800_22.v1.Sp80022TestService` | `RunTestSuite` | `NistValidationService`, `EntropyComparisonService` | SP 800-22 statistical suite execution |
+| `nist.sp800_90b.v1.Sp80090bAssessmentService` | `AssessEntropy` | `NistValidationService`, `EntropyComparisonService` | SP 800-90B min-entropy assessment |
+| `grpc.health.v1.Health` | `Check` | `Nist22ServiceHealthCheck`, `Nist90BServiceHealthCheck` | Readiness probing of external NIST services |
 
-**Response** (200): `IntervalStatisticsDTO`
+## 4. Interface Interaction Diagram
 
-#### GET /api/v1/events/intervals
+```mermaid
+graph LR
+    C1[REST Client] -->|HTTP JSON| R[REST Resources]
+    G1[Gateway] -->|gRPC stream| GS[EntropyStreamService]
 
-Returns detailed interval statistics between consecutive decay events. The response schema is identical to the statistics endpoint but emphasizes inter-event interval analysis.
+    R --> NVS[NistValidationService]
+    GS --> BPS[Batch Processing Services]
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-
-**Response** (200): `IntervalStatisticsDTO`
-
-#### GET /api/v1/events/quality
-
-Returns a comprehensive data quality assessment including packet loss detection, clock drift analysis, and decay rate plausibility for the entropy source.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-
-**Response** (200): `DataQualityReportDTO`
-
-#### GET /api/v1/events/rate
-
-Returns the event rate in Hz with comparison to the expected entropy decay rate of approximately 184 Hz. This endpoint is publicly accessible (`@PermitAll`).
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-
-**Response** (200): `EventRateResponseDTO`
-
-#### GET /api/v1/events/interval-histogram
-
-Returns a histogram of inter-event interval frequencies. Requires at least 100 intervals for statistical validity. Optimized for radioactive decay intervals in the 2-10µs range.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `from` | Query (string) | Now minus 1 hour | Start of time window (ISO-8601) |
-| `to` | Query (string) | Now | End of time window (ISO-8601) |
-| `bucketSizeNs` | Query (int) | 100 | Histogram bucket size in nanoseconds (must be positive, 100 = 0.1µs) |
-
-**Response** (200): `IntervalHistogramDTO`
-
-| Field | Type | Description |
-|---|---|---|
-| `buckets` | List | List of histogram buckets with frequencies |
-| `totalIntervals` | Long | Total number of intervals analyzed |
-| `bucketSizeNs` | Integer | Bucket size in nanoseconds |
-| `windowStart` | Instant | Start of time window |
-| `windowEnd` | Instant | End of time window |
-| `minIntervalNs` | Long | Minimum interval in dataset (ns) |
-| `maxIntervalNs` | Long | Maximum interval in dataset (ns) |
-
-**Response** (400): `ErrorResponseDTO` - Invalid parameters or insufficient data (< 100 intervals)
-
-### Error Responses
-
-All error responses follow a consistent JSON structure produced by the `GlobalExceptionHandler`:
-
-```json
-{
-  "code": "ERROR_CODE",
-  "message": "Human-readable error description",
-  "timestamp": "2024-01-01T00:00:00",
-  "path": "/api/v1/endpoint",
-  "status": 400
-}
+    NVS --> N22[SP80022 gRPC]
+    NVS --> N90[SP80090B gRPC]
+    NVS --> DB[(TimescaleDB)]
+    BPS --> DB
 ```
 
-| HTTP Status | Error Code | Trigger |
-|---|---|---|
-| 400 | `VALIDATION_ERROR` | Invalid parameters or insufficient data (`ValidationException`) |
-| 401 | `UNAUTHORIZED` | Missing or invalid authentication token |
-| 403 | `FORBIDDEN` | Insufficient role permissions |
-| 404 | `NOT_FOUND` | Resource not found |
-| 500 | `INTERNAL_ERROR` | Unhandled exceptions or generic internal failures |
-| 503 | `NIST_SERVICE_ERROR` | NIST gRPC service unavailable or call failure (`NistException`) |
+## 5. Notes on Response Contracts
 
-## gRPC Services
+The repository defines many DTO types (`dto/*`), but this document focuses on interface boundaries and endpoint responsibilities. For thesis usage, DTO schemas can be traced directly to:
 
-### EntropyStream Service
-
-Defined in `entropy.proto`, package `entropy`. This is the primary data plane service implemented by `EntropyStreamService`.
-
-```protobuf
-service EntropyStream {
-  rpc StreamEntropy(stream EntropyBatch) returns (stream Ack);
-  rpc SubscribeBatches(SubscriptionRequest) returns (stream EntropyBatch);
-  rpc Control(stream ControlMessage) returns (stream ControlMessage);
-}
-```
-
-#### StreamEntropy
-
-| Property | Value |
-|---|---|
-| Type | Bidirectional streaming |
-| Authentication | `@RolesAllowed("GATEWAY_ROLE")` |
-| Input | Stream of `EntropyBatch` |
-| Output | Stream of `Ack` |
-| Backpressure | Signaled via `Ack.backpressure` when queue exceeds 800 items |
-| Buffer Size | 1,000 messages |
-
-#### SubscribeBatches
-
-| Property | Value |
-|---|---|
-| Type | Server-side streaming |
-| Authentication | `@RolesAllowed({"ADMIN_ROLE", "USER_ROLE"})` |
-| Input | `SubscriptionRequest` (client ID) |
-| Output | Stream of `EntropyBatch` |
-| Rate Limit | 20 batches per second per subscriber (default) |
-
-#### Control
-
-| Property | Value |
-|---|---|
-| Type | Bidirectional streaming |
-| Authentication | `@Authenticated` |
-| Input | Stream of `ControlMessage` |
-| Output | Stream of `ControlMessage` |
-| Supported Payloads | `Hello`, `ConfigUpdate`, `HealthReport`, `Ping`/`Pong` |
-
-### NIST SP 800-22 Service (Client)
-
-Defined in `nist_sp800_22.proto`, package `nist.sp800_22.v1`. The entropy-processor service acts as a gRPC client to this external service.
-
-```protobuf
-service Sp80022TestService {
-  rpc RunTestSuite(Sp80022TestRequest) returns (Sp80022TestResponse);
-}
-```
-
-The request contains a raw bitstream (minimum recommended length: 1,000,000 bits) and optional per-test configuration overrides. The response contains individual results for up to 15 statistical tests, an overall pass rate, p-value uniformity statistic, and NIST compliance indicator.
-
-### NIST SP 800-90B Service (Client)
-
-Defined in `nist_sp800_90b.proto`, package `nist.sp800_90b.v1`. The entropy-processor service acts as a gRPC client to this external service.
-
-```protobuf
-service Sp80090bAssessmentService {
-  rpc AssessEntropy(Sp80090bAssessmentRequest) returns (Sp80090bAssessmentResponse);
-}
-```
-
-The request specifies the sample data, bits per symbol, and assessment modes (IID and/or non-IID). The response provides an overall min-entropy estimate, individual estimator results (for example Most Common Value, Collision, Markov, Compression), and a pass/fail status.
-
-### gRPC Health Service
-
-Defined in `grpc_health.proto`, implementing the standard gRPC Health Checking Protocol. Provides `Check` and `Watch` RPCs for service health monitoring.
-
-## Protocol Buffer Message Types
-
-### Core Data Messages
-
-| Message | Description | Key Fields |
-|---|---|---|
-| `EntropyBatch` | Batch of TDC events from edge gateway | `events`, `metrics`, `batch_timestamp_us`, `batch_sequence`, `source_id`, `checksum`, `compression`, `whitening`, `tests` |
-| `TDCEvent` | Single radioactive decay event | `rpi_timestamp_us`, `tdc_timestamp_ps`, `channel`, `delta_ps`, `flags` |
-| `EdgeMetrics` | Aggregated edge validation metrics | `quick_shannon_entropy`, `frequency_test_passed`, `runs_test_passed`, `pool_size`, `processing_latency_us`, `bias_ppm` |
-| `Ack` | Batch acknowledgment from server | `success`, `received_sequence`, `message`, `missing_sequences`, `backpressure`, `backpressure_reason` |
-
-### Control Messages
-
-| Message | Description | Key Fields |
-|---|---|---|
-| `ControlMessage` | Envelope for control plane messages | `oneof payload: Hello, ConfigUpdate, HealthReport, Ping, Pong` |
-| `Hello` | Gateway handshake | `source_id`, `version`, `meta` |
-| `ConfigUpdate` | Gateway configuration parameters | `target_batch_size`, `max_rps`, `rct_window`, `apt_window`, `freq_warn_ppm`, `enable_zstd` |
-| `HealthReport` | Gateway health status | `ready`, `healthy`, `pool_size`, `last_ack_latency_us`, `summary` |
-| `Ping` / `Pong` | Latency probe | `ts_us` |
-
-### Supporting Types
-
-| Type | Description |
-|---|---|
-| `WhiteningStats` | Von Neumann debiasing statistics from edge conditioning |
-| `TestSummary` | Lightweight statistical test results from edge (frequency p-value, runs p-value, RCT/APT statistics) |
-| `KvMeta` | Free-form key-value metadata labels |
-| `ChecksumAlgo` | Enum: `CHECKSUM_ALGO_UNSPECIFIED`, `CHECKSUM_SHA256` |
-| `SignatureAlgo` | Enum: `SIGNATURE_ALGO_UNSPECIFIED`, `SIGNATURE_ED25519` |
-| `Compression` | Enum: `COMPRESSION_NONE`, `COMPRESSION_ZSTD` |
+1. Resource method signatures and OpenAPI annotations in `resource/*`.
+2. DTO records under `src/main/java/com/ammann/entropy/dto`.

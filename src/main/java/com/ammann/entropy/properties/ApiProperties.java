@@ -86,6 +86,18 @@ public final class ApiProperties {
     }
 
     /**
+     * Entropy source comparison endpoints
+     */
+    public static final class Comparison {
+        private Comparison() {}
+
+        public static final String BASE = "/comparison";
+        public static final String RESULTS = BASE + "/results";
+        public static final String SUMMARY = BASE + "/summary";
+        public static final String TRIGGER = BASE + "/trigger";
+    }
+
+    /**
      * Health check endpoints (Quarkus defaults)
      */
     public static final class Health {

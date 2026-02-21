@@ -80,12 +80,14 @@ public class NistJobMaintenanceService {
         if (totalMarked > 0) {
             // Get IDs of stuck jobs for detailed logging
             List<UUID> stuckJobIds =
-                    NistValidationJob.find(
+                    NistValidationJob.<NistValidationJob>find(
                                     "status = 'FAILED' AND completedAt = ?1 AND (errorMessage LIKE"
                                             + " '%queued%' OR errorMessage LIKE '%runtime%')",
                                     now)
-                            .project(UUID.class)
-                            .list();
+                            .list()
+                            .stream()
+                            .map(j -> j.id)
+                            .toList();
             LOG.warnf(
                     "Watchdog: marked %d stuck NIST validation jobs as FAILED (running=%d,"
                             + " queued=%d) - JobIDs: %s",

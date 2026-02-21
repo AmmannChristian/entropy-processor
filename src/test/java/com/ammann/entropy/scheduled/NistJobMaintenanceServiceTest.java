@@ -16,8 +16,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 class NistJobMaintenanceServiceTest {
 
-    @Inject
-    NistJobMaintenanceService service;
+    @Inject NistJobMaintenanceService service;
 
     @Test
     @TestTransaction

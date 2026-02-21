@@ -1,3 +1,4 @@
+/* (C)2026 */
 package com.ammann.entropy.enumeration;
 
 /**

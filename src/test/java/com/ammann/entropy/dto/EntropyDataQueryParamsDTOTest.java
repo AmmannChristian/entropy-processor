@@ -170,7 +170,7 @@ class EntropyDataQueryParamsDTOTest {
         pageRequest.page = 50;
         pageRequest.size = 100;
 
-        // Should not throw for page <= 100
+        // Should not throw for page values up to and including 100.
         params.validate(pageRequest);
     }
 

@@ -23,7 +23,8 @@ public final class TestDataFactory {
         EntropyData data = new EntropyData("ts-" + hwTimestampNs, hwTimestampNs, sequence);
         data.serverReceived = serverReceived;
         data.createdAt = serverReceived;
-        data.rpiTimestampUs = hwTimestampNs / 1000; // Convert ns to µs for RPI timestamp
+        data.rpiTimestampUs =
+                hwTimestampNs / 1000; // Convert nanoseconds to microseconds for RPI timestamp.
         data.tdcTimestampPs = hwTimestampNs * 1000; // Convert ns to ps for TDC timestamp
         data.networkDelayMs = 2L;
         data.batchId = "batch-" + UUID.randomUUID();

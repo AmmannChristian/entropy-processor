@@ -544,7 +544,8 @@ public class NistValidationService {
 
         String batchId = events.getFirst().batchId;
         UUID assessmentRunId = UUID.randomUUID();
-        Nist90BResult entity = assess90B(assessmentSample, batchId, start, end, bearerToken, assessmentRunId);
+        Nist90BResult entity =
+                assess90B(assessmentSample, batchId, start, end, bearerToken, assessmentRunId);
         NIST90BResultDTO result = entity.toDTO();
         LOG.infof(
                 "NIST SP 800-90B assessment complete: minEntropy=%.6f, passed=%b, bits=%d",
@@ -563,7 +564,23 @@ public class NistValidationService {
      * @return The persisted Nist90BResult entity
      */
     private Nist90BResult assess90B(
-            byte[] bitstream, String batchId, Instant start, Instant end, String bearerToken, UUID assessmentRunId) {
+            byte[] bitstream,
+            String batchId,
+            Instant start,
+            Instant end,
+            String bearerToken,
+            UUID assessmentRunId) {
+        return assess90B(bitstream, batchId, start, end, bearerToken, assessmentRunId, true);
+    }
+
+    private Nist90BResult assess90B(
+            byte[] bitstream,
+            String batchId,
+            Instant start,
+            Instant end,
+            String bearerToken,
+            UUID assessmentRunId,
+            boolean persistEstimators) {
         if (sp80090bOverride == null && sp80090bClient == null) {
             LOG.warn("NIST SP 800-90B client not configured");
             recordFailureMetric();
@@ -624,11 +641,16 @@ public class NistValidationService {
         em.persist(entity);
 
         // Persist ALL 14 estimators (10 Non-IID + 4 IID) with full metadata
-        for (Sp80090bEstimatorResult est : entropyResult.getNonIidResultsList()) {
-            persistEstimator(assessmentRunId, TestType.NON_IID, est);
-        }
-        for (Sp80090bEstimatorResult est : entropyResult.getIidResultsList()) {
-            persistEstimator(assessmentRunId, TestType.IID, est);
+        // Only persisted when persistEstimators=true to avoid unique constraint violations
+        // in multi-chunk jobs where the same (assessmentRunId, testType, estimatorName) would
+        // repeat
+        if (persistEstimators) {
+            for (Sp80090bEstimatorResult est : entropyResult.getNonIidResultsList()) {
+                persistEstimator(assessmentRunId, TestType.NON_IID, est);
+            }
+            for (Sp80090bEstimatorResult est : entropyResult.getIidResultsList()) {
+                persistEstimator(assessmentRunId, TestType.IID, est);
+            }
         }
 
         return entity;
@@ -640,20 +662,18 @@ public class NistValidationService {
      * <p>Part of V2a dual-write strategy to store ALL 14 estimators (10 Non-IID + 4 IID)
      * with full metadata (passed, details, description).
      *
-     * <p><b>Entropy Semantics:</b> Upstream -1.0 sentinel → NULL (distinguishes non-entropy
-     * tests from true zero entropy).
+     * <p><b>Entropy Semantics:</b> Upstream {@code -1.0} sentinel values are mapped to
+     * {@code null} to distinguish non-entropy estimators from true zero-entropy results.
      *
      * @param assessmentRunId Assessment run identifier (foreign key)
      * @param testType Test type (IID or NON_IID)
      * @param proto Upstream protobuf estimator result
      */
     private void persistEstimator(
-            UUID assessmentRunId,
-            TestType testType,
-            Sp80090bEstimatorResult proto) {
+            UUID assessmentRunId, TestType testType, Sp80090bEstimatorResult proto) {
 
-        // Entropy semantics: Upstream -1.0 = non-entropy test, map to NULL
-        // True 0.0 = degenerate source, keep as 0.0
+        // Entropy semantics: upstream -1.0 indicates a non-entropy estimator and is mapped to null.
+        // True 0.0 indicates a degenerate source and is preserved.
         double rawEntropy = proto.getEntropyEstimate();
         Double entropyEstimate = rawEntropy < 0.0 ? null : rawEntropy;
 
@@ -806,7 +826,7 @@ public class NistValidationService {
                         .sorted(Comparator.comparing(NISTTestResultDTO::testName))
                         .toList();
 
-        // Now testDTOs contains aggregated results (15 tests, not 15 × chunks)
+        // testDTOs now contains aggregated results (15 tests, independent of chunk count).
         int passedCount =
                 (int) testDTOs.stream().filter(dto -> Boolean.TRUE.equals(dto.passed())).count();
         int failedCount = testDTOs.size() - passedCount;
@@ -839,7 +859,7 @@ public class NistValidationService {
 
         NistTestResult firstTest = tests.getFirst();
         return new NISTSuiteResultDTO(
-                testDTOs, // Aggregated tests (15, not 15 × chunks)
+                testDTOs, // Aggregated tests (15, independent of chunk count)
                 testDTOs.size(), // Now correctly 15, not 30
                 passedCount, // Aggregated pass count
                 failedCount, // Aggregated fail count
@@ -1247,6 +1267,7 @@ public class NistValidationService {
             String batchId = events.getFirst().batchId;
 
             // Process each chunk
+            boolean isLastChunk = false;
             for (int i = 0; i < chunks.size(); i++) {
                 byte[] chunk = chunks.get(i);
 
@@ -1254,9 +1275,23 @@ public class NistValidationService {
                         "SP 800-90B job %s: processing chunk %d/%d (%d bytes)",
                         jobId, i + 1, chunks.size(), chunk.length);
 
+                // Persist estimators only for the last chunk: the unique constraint
+                // (assessment_run_id, test_type, estimator_name) would be violated for
+                // repeated chunks since all chunks share the same assessmentRunId.
+                if (i == chunks.size() - 1) {
+                    isLastChunk = true;
+                }
+
                 // Run assessment on chunk (pass assessmentRunId to ensure consistency)
                 Nist90BResult entity =
-                        assess90B(chunk, batchId, job.windowStart, job.windowEnd, bearerToken, assessmentRunId);
+                        assess90B(
+                                chunk,
+                                batchId,
+                                job.windowStart,
+                                job.windowEnd,
+                                bearerToken,
+                                assessmentRunId,
+                                isLastChunk);
 
                 // Update the persisted entity with chunk metadata
                 entity.chunkIndex = i;

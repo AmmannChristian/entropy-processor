@@ -13,9 +13,9 @@ import java.util.Map;
  *
  * <p><b>Entropy Semantics:</b>
  * <ul>
- *   <li>entropyEstimate = null → Non-entropy test (e.g., Chi-Square, LRS)
- *   <li>entropyEstimate = 0.0 → True zero entropy (degenerate source)
- *   <li>Never -1.0 (upstream sentinel mapped to null by service layer)
+ *   <li>{@code entropyEstimate = null}: non-entropy estimator (for example Chi-Square or LRS)
+ *   <li>{@code entropyEstimate = 0.0}: true zero entropy from a degenerate source
+ *   <li>{@code -1.0} is never exposed because the upstream sentinel is mapped to {@code null}
  * </ul>
  *
  * @param testType Test type ("IID" or "NON_IID")

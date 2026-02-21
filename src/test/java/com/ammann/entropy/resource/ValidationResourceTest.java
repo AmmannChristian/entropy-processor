@@ -1,17 +1,18 @@
 /* (C)2026 */
 package com.ammann.entropy.resource;
 
-import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
+import com.ammann.entropy.dto.NIST90BEstimatorResultDTO;
 import com.ammann.entropy.enumeration.TestType;
 import com.ammann.entropy.model.Nist90BEstimatorResult;
 import com.ammann.entropy.model.Nist90BResult;
-import com.ammann.entropy.properties.ApiProperties;
 import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.ws.rs.core.Response;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
@@ -21,10 +22,14 @@ import org.junit.jupiter.api.Test;
  * Tests for ValidationResource REST endpoints.
  *
  * <p>Focuses on V2a migration endpoints for NIST SP 800-90B estimator results.
- * Note: Security is handled by application.properties test profile.
+ * Uses direct method invocation (not HTTP) to avoid transaction isolation issues
+ * with {@code @TestTransaction}.
  */
 @QuarkusTest
 class ValidationResourceTest {
+
+    /** Direct instantiation bypasses CDI security proxy (@RolesAllowed interceptor). */
+    private final ValidationResource resource = new ValidationResource();
 
     @AfterEach
     @TestTransaction
@@ -38,34 +43,28 @@ class ValidationResourceTest {
     void getEstimators_nonExistentRunId_returns404() {
         UUID nonExistent = UUID.randomUUID();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + nonExistent
-                                + "/estimators")
-                .then()
-                .statusCode(404)
-                .body("error", equalTo("Assessment not found"));
+        Response response = resource.getEstimatorResults(nonExistent, null);
+
+        assertThat(response.getStatus()).isEqualTo(404);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = (Map<String, Object>) response.getEntity();
+        assertThat(body.get("error")).isEqualTo("Assessment not found");
     }
 
     @Test
     @TestTransaction
     void getEstimators_noEstimatorRows_returnsEmptyArray() {
-        // Create assessment without estimators
         UUID assessmentRunId = UUID.randomUUID();
         Nist90BResult result = createAssessmentWithoutEstimators(assessmentRunId);
         result.persist();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(0)); // Empty array
+        Response response = resource.getEstimatorResults(assessmentRunId, null);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        @SuppressWarnings("unchecked")
+        List<NIST90BEstimatorResultDTO> dtos =
+                (List<NIST90BEstimatorResultDTO>) response.getEntity();
+        assertThat(dtos).isEmpty();
     }
 
     @Test
@@ -75,15 +74,13 @@ class ValidationResourceTest {
         Nist90BResult result = createAssessmentWithoutEstimators(assessmentRunId);
         result.persist();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=INVALID")
-                .then()
-                .statusCode(400)
-                .body("error", containsString("Invalid testType. Must be IID or NON_IID"));
+        Response response = resource.getEstimatorResults(assessmentRunId, "INVALID");
+
+        assertThat(response.getStatus()).isEqualTo(400);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = (Map<String, Object>) response.getEntity();
+        assertThat(body.get("error").toString())
+                .contains("Invalid testType. Must be IID or NON_IID");
     }
 
     @Test
@@ -92,48 +89,24 @@ class ValidationResourceTest {
         UUID assessmentRunId = setupTestDataWithEstimators();
 
         // Test lowercase "iid"
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=iid")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(2)); // 2 IID tests
+        Response r1 = resource.getEstimatorResults(assessmentRunId, "iid");
+        assertThat(r1.getStatus()).isEqualTo(200);
+        assertThat(asDtos(r1)).hasSize(2);
 
         // Test uppercase "IID"
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=IID")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(2));
+        Response r2 = resource.getEstimatorResults(assessmentRunId, "IID");
+        assertThat(r2.getStatus()).isEqualTo(200);
+        assertThat(asDtos(r2)).hasSize(2);
 
         // Test mixed case "non_iid"
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=non_iid")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(3)); // 3 Non-IID estimators
+        Response r3 = resource.getEstimatorResults(assessmentRunId, "non_iid");
+        assertThat(r3.getStatus()).isEqualTo(200);
+        assertThat(asDtos(r3)).hasSize(3);
 
         // Test uppercase "NON_IID"
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=NON_IID")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(3));
+        Response r4 = resource.getEstimatorResults(assessmentRunId, "NON_IID");
+        assertThat(r4.getStatus()).isEqualTo(200);
+        assertThat(asDtos(r4)).hasSize(3);
     }
 
     @Test
@@ -141,18 +114,14 @@ class ValidationResourceTest {
     void getEstimators_noTestTypeParam_returnsAll() {
         UUID assessmentRunId = setupTestDataWithEstimators();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(5)) // 3 Non-IID + 2 IID
-                .body("[0].testType", notNullValue())
-                .body("[0].estimatorName", notNullValue())
-                .body("[0].passed", notNullValue());
+        Response response = resource.getEstimatorResults(assessmentRunId, null);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        List<NIST90BEstimatorResultDTO> dtos = asDtos(response);
+        assertThat(dtos).hasSize(5); // 3 Non-IID + 2 IID
+        assertThat(dtos.get(0).testType()).isNotNull();
+        assertThat(dtos.get(0).estimatorName()).isNotNull();
+        assertThat(dtos.get(0).passed()).isNotNull();
     }
 
     @Test
@@ -160,19 +129,15 @@ class ValidationResourceTest {
     void getEstimators_filterByIID_returnsOnlyIID() {
         UUID assessmentRunId = setupTestDataWithEstimators();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=IID")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(2))
-                .body("[0].testType", equalTo("IID"))
-                .body("[1].testType", equalTo("IID"))
-                .body("[0].estimatorName", equalTo("Chi-Square Test"))
-                .body("[1].estimatorName", equalTo("LRS Test"));
+        Response response = resource.getEstimatorResults(assessmentRunId, "IID");
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        List<NIST90BEstimatorResultDTO> dtos = asDtos(response);
+        assertThat(dtos).hasSize(2);
+        assertThat(dtos.get(0).testType()).isEqualTo("IID");
+        assertThat(dtos.get(1).testType()).isEqualTo("IID");
+        assertThat(dtos.get(0).estimatorName()).isEqualTo("Chi-Square Test");
+        assertThat(dtos.get(1).estimatorName()).isEqualTo("LRS Test");
     }
 
     @Test
@@ -180,18 +145,14 @@ class ValidationResourceTest {
     void getEstimators_filterByNonIID_returnsOnlyNonIID() {
         UUID assessmentRunId = setupTestDataWithEstimators();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators?testType=NON_IID")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(3))
-                .body("[0].testType", equalTo("NON_IID"))
-                .body("[1].testType", equalTo("NON_IID"))
-                .body("[2].testType", equalTo("NON_IID"));
+        Response response = resource.getEstimatorResults(assessmentRunId, "NON_IID");
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        List<NIST90BEstimatorResultDTO> dtos = asDtos(response);
+        assertThat(dtos).hasSize(3);
+        assertThat(dtos.get(0).testType()).isEqualTo("NON_IID");
+        assertThat(dtos.get(1).testType()).isEqualTo("NON_IID");
+        assertThat(dtos.get(2).testType()).isEqualTo("NON_IID");
     }
 
     @Test
@@ -213,17 +174,13 @@ class ValidationResourceTest {
                         "Tests independence");
         estimator.persist();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(1))
-                .body("[0].entropyEstimate", nullValue()) // NULL, not 0.0
-                .body("[0].passed", equalTo(true));
+        Response response = resource.getEstimatorResults(assessmentRunId, null);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        List<NIST90BEstimatorResultDTO> dtos = asDtos(response);
+        assertThat(dtos).hasSize(1);
+        assertThat(dtos.get(0).entropyEstimate()).isNull(); // NULL, not 0.0
+        assertThat(dtos.get(0).passed()).isTrue();
     }
 
     @Test
@@ -245,17 +202,13 @@ class ValidationResourceTest {
                         "Degenerate source");
         estimator.persist();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(1))
-                .body("[0].entropyEstimate", equalTo(0.0f)) // 0.0, not null
-                .body("[0].passed", equalTo(false));
+        Response response = resource.getEstimatorResults(assessmentRunId, null);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        List<NIST90BEstimatorResultDTO> dtos = asDtos(response);
+        assertThat(dtos).hasSize(1);
+        assertThat(dtos.get(0).entropyEstimate()).isEqualTo(0.0); // 0.0, not null
+        assertThat(dtos.get(0).passed()).isFalse();
     }
 
     @Test
@@ -281,20 +234,21 @@ class ValidationResourceTest {
                         "Chi-square test");
         estimator.persist();
 
-        given().when()
-                .get(
-                        ApiProperties.BASE_URL_V1
-                                + "/validation/90b-results/"
-                                + assessmentRunId
-                                + "/estimators")
-                .then()
-                .statusCode(200)
-                .body("$", hasSize(1))
-                .body("[0].details.chi_square", equalTo(12.45f))
-                .body("[0].details.df", equalTo(10.0f));
+        Response response = resource.getEstimatorResults(assessmentRunId, null);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        List<NIST90BEstimatorResultDTO> dtos = asDtos(response);
+        assertThat(dtos).hasSize(1);
+        assertThat(dtos.get(0).details()).containsEntry("chi_square", 12.45);
+        assertThat(dtos.get(0).details()).containsEntry("df", 10.0);
     }
 
     // ==================== Test Helper Methods ====================
+
+    @SuppressWarnings("unchecked")
+    private List<NIST90BEstimatorResultDTO> asDtos(Response response) {
+        return (List<NIST90BEstimatorResultDTO>) response.getEntity();
+    }
 
     private Nist90BResult createAssessmentWithoutEstimators(UUID assessmentRunId) {
         Instant now = Instant.now();
@@ -360,13 +314,7 @@ class ValidationResourceTest {
                 .persist();
 
         new Nist90BEstimatorResult(
-                        assessmentRunId,
-                        TestType.IID,
-                        "LRS Test",
-                        null,
-                        true,
-                        null,
-                        "LRS test")
+                        assessmentRunId, TestType.IID, "LRS Test", null, true, null, "LRS test")
                 .persist();
 
         return assessmentRunId;
