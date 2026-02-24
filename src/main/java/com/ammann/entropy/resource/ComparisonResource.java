@@ -29,7 +29,7 @@ import org.jboss.logging.Logger;
 public class ComparisonResource {
 
     private static final Logger LOG = Logger.getLogger(ComparisonResource.class);
-    private static final int MAX_LIMIT = 50;
+    private static final int MAX_LIMIT = 100;
 
     @Inject EntropyComparisonService comparisonService;
 

@@ -258,7 +258,7 @@ public class EntropyComparisonService {
         kernelWriterService.feedKernelEntropy();
 
         try {
-            Thread.sleep(20);
+            Thread.sleep(200);
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
