@@ -54,8 +54,19 @@ Security model from code/config:
 |---|---|---|---|
 | GET | `/validation/jobs` | `ADMIN_ROLE`, `USER_ROLE` | Paginated validation jobs |
 | GET | `/validation/test-results` | `ADMIN_ROLE`, `USER_ROLE` | Paginated SP 800-22 test rows |
-| GET | `/validation/90b-results` | `ADMIN_ROLE`, `USER_ROLE` | Paginated SP 800-90B result rows |
+| GET | `/validation/90b-results` | `ADMIN_ROLE`, `USER_ROLE` | Paginated SP 800-90B result rows; `summaryOnly=true` (default) returns run-summary rows only, `summaryOnly=false` returns per-chunk rows |
 | GET | `/validation/90b-results/{assessmentRunId}/estimators` | `ADMIN_ROLE`, `USER_ROLE` | Estimator-level 90B results, optional `testType` filter |
+
+#### 2.4.1 SP 800-90B Result Query Semantics
+
+The `GET /validation/90b-results` endpoint accepts a `summaryOnly` query parameter that controls which category of rows is returned. This parameter reflects the run-summary row discrimination in the `nist_90b_results` table.
+
+- **`summaryOnly=true`** (default): Returns only canonical run-summary rows (`is_run_summary = TRUE`), ordered by `executedAt DESC`. Each row represents the final aggregated outcome of a completed SP 800-90B assessment run. One row is returned per completed run.
+- **`summaryOnly=false`**: Returns only per-chunk forensic rows (`is_run_summary = FALSE`), ordered by `chunkIndex ASC`. This mode is intended for detailed inspection of individual chunk outcomes. Combining this mode with an `assessmentRunId` filter isolates the chunk rows for a specific run.
+
+The job-level result endpoint (`GET /entropy/nist/validate90b/result/{jobId}`) always returns the canonical summary row only. If no summary row exists for the referenced assessment run, the endpoint returns an error. This condition arises when the run is still in progress or when the run predates the run-summary schema migration.
+
+The `isRunSummary` boolean field in the response DTO reflects the row type and can be used by clients to confirm whether a given result represents a canonical run-level outcome or a per-chunk forensic record.
 
 ### 2.5 ComparisonResource
 

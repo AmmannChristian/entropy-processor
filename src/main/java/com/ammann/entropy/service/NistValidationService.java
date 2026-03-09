@@ -1238,7 +1238,7 @@ public class NistValidationService {
      * Async worker for an SP 800-90B validation job.
      *
      * <p>Processes all chunks sequentially, persists per-chunk rows, then writes a single
-     * run-summary row (Model C) whose minEntropy equals the worst chunk and whose passed
+     * run-summary row whose minEntropy equals the worst chunk and whose passed
      * flag is the conjunction of all chunks. Estimator rows are sourced from the
      * worst-minEntropy chunk via {@link #writeEstimatorsForRun}.
      *
@@ -1284,7 +1284,7 @@ public class NistValidationService {
 
             String batchId = events.getFirst().batchId;
 
-            // Model C aggregation: the canonical run result uses the minimum minEntropy
+            // Canonical run aggregation: use the minimum minEntropy
             // across all chunks and requires every chunk to pass.
             double worstMinEntropy = Double.MAX_VALUE;
             Sp80090bAssessmentResponse worstResponse = null;
@@ -1317,7 +1317,7 @@ public class NistValidationService {
                     worstChunkIndex = i;
                 }
 
-                allPassed &= outcome.response().getPassed(); // Model C: run passes only if all chunks pass
+                allPassed &= outcome.response().getPassed(); // Run passes only if all chunks pass
                 totalBits += entity.bitsTested != null ? entity.bitsTested : 0L;
 
                 // Update progress
@@ -1508,14 +1508,14 @@ public class NistValidationService {
         }
 
         // Fetch the canonical run-summary row (isRunSummary=true). Absent for
-        // incomplete runs and runs that predate the Model C schema.
+        // incomplete runs and runs that predate the run-summary schema migration.
         Nist90BResult summary = Nist90BResult
                 .find("assessmentRunId = ?1 AND isRunSummary = true", job.assessmentRunId)
                 .firstResult();
         if (summary == null) {
             throw new ValidationException(
                     "No run-summary row found for assessment run of job " + jobId
-                            + "; the run may predate the Model C schema or may still be in progress");
+                            + "; the run may predate the run-summary schema migration or may still be in progress");
         }
         return summary.toDTO();
     }

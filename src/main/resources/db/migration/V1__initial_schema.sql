@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS nist_90b_results (
     assessment_details    JSONB,                         -- Full assessment summary from the 90B service.
     chunk_index           INTEGER,                       -- Which chunk within a run produced this result (0-based).
     chunk_count           INTEGER,                       -- Total number of chunks in this assessment run.
-    is_run_summary        BOOLEAN          NOT NULL DEFAULT FALSE, -- TRUE marks the single canonical result for a completed run (Model C); FALSE marks per-chunk forensic rows.
+    is_run_summary        BOOLEAN          NOT NULL DEFAULT FALSE, -- TRUE marks the single canonical result for a completed run; FALSE marks per-chunk forensic rows.
 
     PRIMARY KEY (id, executed_at)
 );

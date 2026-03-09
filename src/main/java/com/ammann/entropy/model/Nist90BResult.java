@@ -85,7 +85,7 @@ public class Nist90BResult extends PanacheEntity {
     public Integer chunkCount;
 
     /**
-     * Discriminates the canonical run-level result from per-chunk forensic rows (Model C).
+     * Discriminates the canonical run-level result from per-chunk forensic rows.
      *
      * <p>When {@code true}, this row is the single authoritative result for the entire
      * assessment run: its minEntropy is the minimum across all chunks, and its passed

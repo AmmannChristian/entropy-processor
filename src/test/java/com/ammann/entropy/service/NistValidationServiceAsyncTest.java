@@ -209,7 +209,7 @@ class NistValidationServiceAsyncTest {
         assertThat(reloaded.assessmentRunId).isNotNull();
         assertThat(reloaded.errorMessage).isNull();
 
-        // Model C: N chunk rows (isRunSummary=false) + 1 summary row (isRunSummary=true)
+        // Expected persistence shape: N per-chunk rows (isRunSummary=false) + 1 run summary row (isRunSummary=true)
         List<Nist90BResult> chunkRows =
                 Nist90BResult.find(
                                 "assessmentRunId = ?1 AND isRunSummary = false",
@@ -381,7 +381,7 @@ class NistValidationServiceAsyncTest {
 
         assertThatThrownBy(() -> service.getSp80090bJobResult(job.id))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("No run summary found for job");
+                .hasMessageContaining("No run-summary row found for assessment run of job");
     }
 
     @Test
@@ -447,19 +447,19 @@ class NistValidationServiceAsyncTest {
     }
 
     // -------------------------------------------------------------------------
-    // T8 — Model C write-path unit tests
+    // T8 — Run-summary write-path unit tests
     // -------------------------------------------------------------------------
 
     @Test
     @TestTransaction
-    void modelC_singleChunk_summaryEqualsChunkMetrics() {
+    void singleChunkRun_summaryEqualsChunkMetrics() {
         clearAll();
         service.setSp80090bOverride(sp80090bSuccess()); // minEntropy=7.5, passed=true
         service.setSp80090bMaxBytesForTesting(1_000_000); // no chunking
 
         Instant end = Instant.now();
         Instant start = end.minusSeconds(300);
-        seedEntropyEvents("modelc-single", start, 10);
+        seedEntropyEvents("summary-single", start, 10);
 
         NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
         service.processSp80090bValidationJob(job.id, null);
@@ -484,7 +484,7 @@ class NistValidationServiceAsyncTest {
 
     @Test
     @TestTransaction
-    void modelC_multiChunk_allPass_summaryMinEntropyIsGlobalMin() {
+    void multiChunkAllPass_summaryMinEntropyIsGlobalMin() {
         clearAll();
         // Fixed response: minEntropy=7.5, passed=true for all chunks
         service.setSp80090bOverride(sp80090bSuccess());
@@ -492,7 +492,7 @@ class NistValidationServiceAsyncTest {
 
         Instant end = Instant.now();
         Instant start = end.minusSeconds(300);
-        seedEntropyEvents("modelc-multi", start, 10);
+        seedEntropyEvents("summary-multi", start, 10);
 
         NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
         service.processSp80090bValidationJob(job.id, null);
@@ -517,7 +517,7 @@ class NistValidationServiceAsyncTest {
 
     @Test
     @TestTransaction
-    void modelC_noSummaryRow_getSp80090bJobResultThrowsClearError() {
+    void noSummaryRow_getSp80090bJobResultThrowsClearError() {
         clearAll();
         UUID assessmentRunId = UUID.randomUUID();
         Instant end = Instant.now();
@@ -537,7 +537,7 @@ class NistValidationServiceAsyncTest {
 
         assertThatThrownBy(() -> service.getSp80090bJobResult(job.id))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("No run summary found for job");
+                .hasMessageContaining("No run-summary row found for assessment run of job");
 
         // list90BResults with default (summaryOnly=true) returns zero rows for this run
         long summaryCount = Nist90BResult.count(
@@ -547,7 +547,7 @@ class NistValidationServiceAsyncTest {
 
     @Test
     @TestTransaction
-    void modelC_summaryRowAbsent_listResultsReturnsNoRowForRun() {
+    void summaryRowAbsent_listResultsReturnsNoRowForRun() {
         clearAll();
         UUID assessmentRunId = UUID.randomUUID();
         Instant end = Instant.now();
@@ -649,7 +649,7 @@ class NistValidationServiceAsyncTest {
                             assertThat(job.status).isEqualTo(JobStatus.COMPLETED);
                             assertThat(job.assessmentRunId).isNotNull();
                             assertThat(job.progressPercent).isEqualTo(100);
-                            // Model C: must have exactly one run-summary row
+                            // A completed run must have exactly one run-summary row
                             assertThat(
                                             Nist90BResult.count(
                                                     "assessmentRunId = ?1 AND isRunSummary = true",

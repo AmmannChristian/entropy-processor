@@ -85,12 +85,22 @@ Time-series behavior:
 
 Purpose:
 
-1. Stores aggregate SP 800-90B outcomes per chunk/run.
+1. Stores SP 800-90B assessment outcomes using run-summary row discrimination. Each row is either a **run summary row** (`is_run_summary = TRUE`) representing the canonical result for a completed run, or a **per-chunk row** (`is_run_summary = FALSE`) representing a single chunk processed during the assessment.
 2. Provides run-level link via `assessment_run_id`.
 
 Key columns:
 
-- `assessment_run_id`, `min_entropy`, `passed`, `assessment_details`, `executed_at`.
+- `assessment_run_id`, `min_entropy`, `passed`, `assessment_details`, `executed_at`, `is_run_summary`, `chunk_index`, `chunk_count`.
+
+Row discrimination:
+
+- **Run summary row** (`is_run_summary = TRUE`): Written once after all chunks have been processed. Contains `min_entropy = MIN(all chunks)`, `passed = AND(all chunks)`, and `chunk_index = NULL`. The `assessment_details` JSON includes aggregation metadata such as chunk count, aggregation rule, and the index of the estimator source chunk.
+- **Per-chunk row** (`is_run_summary = FALSE`): Written during chunk processing. Contains the `chunk_index` (zero-based) and the assessment outcome for that individual chunk. These rows are retained for forensic diagnosis but are not treated as canonical results.
+- **Incomplete run**: If the chunk loop fails before completion, no summary row is written. The absence of a summary row for a given `assessment_run_id` indicates that the run did not complete successfully. Partial per-chunk rows may remain.
+
+Partial unique index:
+
+- `uq_nist_90b_run_summary ON nist_90b_results (assessment_run_id) WHERE is_run_summary = TRUE` enforces that at most one summary row exists per assessment run.
 
 Time-series behavior:
 
@@ -167,5 +177,5 @@ From entity and service code:
 
 1. Time-window access is the dominant access pattern (`server_received` and `executed_at`).
 2. Interval analytics are performed using native SQL window functions over `entropy_data`.
-3. Validation retrieval uses run identifiers (`test_suite_run_id`, `assessment_run_id`) for aggregation and API responses.
+3. Validation retrieval uses run identifiers (`test_suite_run_id`, `assessment_run_id`) for aggregation and API responses. SP 800-90B result retrieval filters on `is_run_summary` to distinguish canonical run-summary rows from forensic per-chunk rows.
 4. Job tracking is independent from test-result tables and linked by run IDs.

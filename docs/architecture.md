@@ -109,6 +109,7 @@ Key architectural traits visible in code:
 1. Asynchronous job model with persisted progress (`nist_validation_jobs`).
 2. Scheduled and on-demand execution coexist.
 3. Authentication propagation strategy: request token when present, service token fallback otherwise.
+4. Conservative run aggregation for SP 800-90B: after chunked processing completes, a single run-summary row is written with the minimum entropy across all chunks and a conjunctive pass result. Estimator-level detail rows are sourced from the chunk with the lowest min-entropy value, ensuring that the worst-case chunk determines the published estimator profile.
 
 ## 5. Security Architecture
 

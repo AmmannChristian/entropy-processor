@@ -28,10 +28,10 @@ public record NIST90BResultDTO(
         @Schema(
                         description =
                                 "When true, this is the single canonical result for the completed"
-                                        + " assessment run (Model C). When false, this is a per-chunk"
+                                        + " assessment run. When false, this is a per-chunk"
                                         + " row retained for forensic analysis. If no row with"
                                         + " isRunSummary=true exists for a given assessmentRunId,"
-                                        + " the run is incomplete or predates the Model C schema.")
+                                        + " the run is incomplete or predates the run-summary schema migration.")
                 boolean isRunSummary) {
     /**
      * Converts entity to DTO.
