@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS nist_90b_results (
     assessment_details    JSONB,                         -- Full assessment summary from the 90B service.
     chunk_index           INTEGER,                       -- Which chunk within a run produced this result (0-based).
     chunk_count           INTEGER,                       -- Total number of chunks in this assessment run.
+    is_run_summary        BOOLEAN          NOT NULL DEFAULT FALSE, -- TRUE marks the single canonical result for a completed run (Model C); FALSE marks per-chunk forensic rows.
 
     PRIMARY KEY (id, executed_at)
 );
@@ -136,6 +137,14 @@ CREATE INDEX IF NOT EXISTS idx_90b_executed_at ON nist_90b_results(executed_at);
 CREATE INDEX IF NOT EXISTS idx_90b_passed ON nist_90b_results(passed);
 CREATE INDEX IF NOT EXISTS idx_90b_assessment_run ON nist_90b_results(assessment_run_id);
 CREATE INDEX IF NOT EXISTS idx_90b_assessment_run_chunk ON nist_90b_results(assessment_run_id, chunk_index);
+
+-- Partial unique index: enforces that each assessment run has at most one
+-- canonical summary row (is_run_summary = TRUE). Per-chunk rows (FALSE)
+-- are unconstrained. The absence of a summary row for a given
+-- assessment_run_id indicates an incomplete or failed run.
+CREATE UNIQUE INDEX uq_nist_90b_run_summary
+    ON nist_90b_results (assessment_run_id)
+    WHERE is_run_summary = TRUE;
 
 
 -- 3a. nist_90b_estimator_results -- Individual NIST SP 800-90B Estimator Results

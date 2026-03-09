@@ -84,6 +84,18 @@ public class Nist90BResult extends PanacheEntity {
     @Column(name = "chunk_count")
     public Integer chunkCount;
 
+    /**
+     * Discriminates the canonical run-level result from per-chunk forensic rows (Model C).
+     *
+     * <p>When {@code true}, this row is the single authoritative result for the entire
+     * assessment run: its minEntropy is the minimum across all chunks, and its passed
+     * flag is the conjunction. When {@code false}, this is an individual per-chunk row
+     * retained for forensic analysis. The absence of a summary row for a given
+     * {@code assessmentRunId} indicates an incomplete or failed run.
+     */
+    @Column(name = "is_run_summary", nullable = false)
+    public boolean isRunSummary = false;
+
     public Nist90BResult() {}
 
     public Nist90BResult(
@@ -120,6 +132,7 @@ public class Nist90BResult extends PanacheEntity {
                 executedAt,
                 bitsTested != null ? bitsTested : 0L,
                 window,
-                assessmentRunId);
+                assessmentRunId,
+                isRunSummary);
     }
 }

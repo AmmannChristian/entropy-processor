@@ -24,7 +24,15 @@ public record NIST90BResultDTO(
                         description =
                                 "Assessment run identifier for fetching detailed estimator results"
                                         + " via /90b-results/{assessmentRunId}/estimators")
-                java.util.UUID assessmentRunId) {
+                java.util.UUID assessmentRunId,
+        @Schema(
+                        description =
+                                "When true, this is the single canonical result for the completed"
+                                        + " assessment run (Model C). When false, this is a per-chunk"
+                                        + " row retained for forensic analysis. If no row with"
+                                        + " isRunSummary=true exists for a given assessmentRunId,"
+                                        + " the run is incomplete or predates the Model C schema.")
+                boolean isRunSummary) {
     /**
      * Converts entity to DTO.
      */

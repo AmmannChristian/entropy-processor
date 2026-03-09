@@ -209,13 +209,28 @@ class NistValidationServiceAsyncTest {
         assertThat(reloaded.assessmentRunId).isNotNull();
         assertThat(reloaded.errorMessage).isNull();
 
-        List<Nist90BResult> persisted =
-                Nist90BResult.list("assessmentRunId", reloaded.assessmentRunId);
-        assertThat(persisted).hasSize(reloaded.totalChunks);
-        assertThat(persisted).extracting(result -> result.chunkIndex).contains(0, 1);
-        assertThat(persisted)
+        // Model C: N chunk rows (isRunSummary=false) + 1 summary row (isRunSummary=true)
+        List<Nist90BResult> chunkRows =
+                Nist90BResult.find(
+                                "assessmentRunId = ?1 AND isRunSummary = false",
+                                reloaded.assessmentRunId)
+                        .list();
+        assertThat(chunkRows).hasSize(reloaded.totalChunks);
+        assertThat(chunkRows).extracting(result -> result.chunkIndex).contains(0, 1);
+        assertThat(chunkRows)
                 .extracting(result -> result.chunkCount)
                 .containsOnly(reloaded.totalChunks);
+
+        Nist90BResult summary =
+                Nist90BResult.find(
+                                "assessmentRunId = ?1 AND isRunSummary = true",
+                                reloaded.assessmentRunId)
+                        .firstResult();
+        assertThat(summary).isNotNull();
+        assertThat(summary.passed).isTrue();
+        assertThat(summary.chunkCount).isEqualTo(reloaded.totalChunks);
+        assertThat(summary.minEntropy).isNotNull();
+        assertThat(summary.assessmentDetails).contains("estimator_source_chunk");
     }
 
     @Test
@@ -366,12 +381,12 @@ class NistValidationServiceAsyncTest {
 
         assertThatThrownBy(() -> service.getSp80090bJobResult(job.id))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("No results found for assessment run");
+                .hasMessageContaining("No run summary found for job");
     }
 
     @Test
     @TestTransaction
-    void getSp80090bJobResultReturnsFirstPersistedResult() {
+    void getSp80090bJobResultReturnsSummaryRow() {
         clearAll();
         UUID assessmentRunId = UUID.randomUUID();
         Instant end = Instant.now();
@@ -382,14 +397,27 @@ class NistValidationServiceAsyncTest {
         job.assessmentRunId = assessmentRunId;
         job.persist();
 
-        Nist90BResult result =
+        // Chunk row — must NOT be returned by getSp80090bJobResult
+        Nist90BResult chunkRow =
+                new Nist90BResult("batch-1", 6.0, true, "{\"summary\":\"chunk\"}", 2048L, start, end);
+        chunkRow.assessmentRunId = assessmentRunId;
+        chunkRow.chunkIndex = 0;
+        chunkRow.chunkCount = 1;
+        chunkRow.isRunSummary = false;
+        chunkRow.persist();
+
+        // Summary row — the canonical result
+        Nist90BResult summaryRow =
                 new Nist90BResult("batch-1", 7.5, true, "{\"summary\":\"ok\"}", 4096L, start, end);
-        result.assessmentRunId = assessmentRunId;
-        result.persist();
+        summaryRow.assessmentRunId = assessmentRunId;
+        summaryRow.chunkCount = 1;
+        summaryRow.isRunSummary = true;
+        summaryRow.persist();
 
         NIST90BResultDTO dto = service.getSp80090bJobResult(job.id);
         assertThat(dto.minEntropy()).isEqualTo(7.5);
         assertThat(dto.bitsTested()).isEqualTo(4096L);
+        assertThat(dto.isRunSummary()).isTrue();
     }
 
     @Test
@@ -416,6 +444,170 @@ class NistValidationServiceAsyncTest {
         recentPass.persist();
 
         assertThat(service.countRecentFailures(2)).isEqualTo(1L);
+    }
+
+    // -------------------------------------------------------------------------
+    // T8 — Model C write-path unit tests
+    // -------------------------------------------------------------------------
+
+    @Test
+    @TestTransaction
+    void modelC_singleChunk_summaryEqualsChunkMetrics() {
+        clearAll();
+        service.setSp80090bOverride(sp80090bSuccess()); // minEntropy=7.5, passed=true
+        service.setSp80090bMaxBytesForTesting(1_000_000); // no chunking
+
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(300);
+        seedEntropyEvents("modelc-single", start, 10);
+
+        NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
+        service.processSp80090bValidationJob(job.id, null);
+
+        NistValidationJob reloaded = NistValidationJob.findById(job.id);
+        assertThat(reloaded.status).isEqualTo(JobStatus.COMPLETED);
+        assertThat(reloaded.totalChunks).isEqualTo(1);
+
+        Nist90BResult summary = Nist90BResult.find(
+                "assessmentRunId = ?1 AND isRunSummary = true", reloaded.assessmentRunId)
+                .firstResult();
+        assertThat(summary).isNotNull();
+        assertThat(summary.minEntropy).isEqualTo(7.5);
+        assertThat(summary.passed).isTrue();
+        assertThat(summary.chunkCount).isEqualTo(1);
+
+        // Estimators written from chunk 0
+        assertThat(Nist90BEstimatorResult.count("assessmentRunId", reloaded.assessmentRunId))
+                .isEqualTo(4L); // 2 NonIID + 2 IID in sp80090bSuccess()
+        assertThat(summary.assessmentDetails).contains("\"estimator_source_chunk\":0");
+    }
+
+    @Test
+    @TestTransaction
+    void modelC_multiChunk_allPass_summaryMinEntropyIsGlobalMin() {
+        clearAll();
+        // Fixed response: minEntropy=7.5, passed=true for all chunks
+        service.setSp80090bOverride(sp80090bSuccess());
+        service.setSp80090bMaxBytesForTesting(100); // force multiple chunks
+
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(300);
+        seedEntropyEvents("modelc-multi", start, 10);
+
+        NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
+        service.processSp80090bValidationJob(job.id, null);
+
+        NistValidationJob reloaded = NistValidationJob.findById(job.id);
+        assertThat(reloaded.status).isEqualTo(JobStatus.COMPLETED);
+        assertThat(reloaded.totalChunks).isGreaterThanOrEqualTo(2);
+
+        Nist90BResult summary = Nist90BResult.find(
+                "assessmentRunId = ?1 AND isRunSummary = true", reloaded.assessmentRunId)
+                .firstResult();
+        assertThat(summary).isNotNull();
+        assertThat(summary.passed).isTrue();
+        assertThat(summary.minEntropy).isEqualTo(7.5); // min of identical chunks
+        assertThat(summary.chunkCount).isEqualTo(reloaded.totalChunks);
+
+        // Exactly one summary row
+        assertThat(Nist90BResult.count(
+                "assessmentRunId = ?1 AND isRunSummary = true", reloaded.assessmentRunId))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    @TestTransaction
+    void modelC_noSummaryRow_getSp80090bJobResultThrowsClearError() {
+        clearAll();
+        UUID assessmentRunId = UUID.randomUUID();
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(120);
+
+        NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.COMPLETED, start, end);
+        job.assessmentRunId = assessmentRunId;
+        job.persist();
+
+        // Only a chunk row exists — no summary row
+        Nist90BResult chunkRow =
+                new Nist90BResult("batch-x", 6.5, true, null, 1024L, start, end);
+        chunkRow.assessmentRunId = assessmentRunId;
+        chunkRow.chunkIndex = 0;
+        chunkRow.isRunSummary = false;
+        chunkRow.persist();
+
+        assertThatThrownBy(() -> service.getSp80090bJobResult(job.id))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("No run summary found for job");
+
+        // list90BResults with default (summaryOnly=true) returns zero rows for this run
+        long summaryCount = Nist90BResult.count(
+                "assessmentRunId = ?1 AND isRunSummary = true", assessmentRunId);
+        assertThat(summaryCount).isZero();
+    }
+
+    @Test
+    @TestTransaction
+    void modelC_summaryRowAbsent_listResultsReturnsNoRowForRun() {
+        clearAll();
+        UUID assessmentRunId = UUID.randomUUID();
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(120);
+
+        // Partial chunk rows — no summary
+        for (int i = 0; i < 3; i++) {
+            Nist90BResult chunk =
+                    new Nist90BResult("batch-partial", 7.0, true, null, 512L, start, end);
+            chunk.assessmentRunId = assessmentRunId;
+            chunk.chunkIndex = i;
+            chunk.chunkCount = 4;
+            chunk.isRunSummary = false;
+            chunk.persist();
+        }
+
+        // summaryOnly=true (default) — this run produces zero summary rows
+        long summaryCount = Nist90BResult.count(
+                "assessmentRunId = ?1 AND isRunSummary = true", assessmentRunId);
+        assertThat(summaryCount).isZero();
+
+        // summaryOnly=false — chunk rows are visible for forensic inspection
+        long chunkCount = Nist90BResult.count(
+                "assessmentRunId = ?1 AND isRunSummary = false", assessmentRunId);
+        assertThat(chunkCount).isEqualTo(3L);
+    }
+
+    // -------------------------------------------------------------------------
+    // T8 — Read-path unit tests
+    // -------------------------------------------------------------------------
+
+    @Test
+    @TestTransaction
+    void listResults_defaultSummaryOnly_returnsOnlyRunSummaryRows() {
+        clearAll();
+        UUID runId = UUID.randomUUID();
+        Instant end = Instant.now();
+        Instant start = end.minusSeconds(120);
+
+        // One summary row + two chunk rows
+        Nist90BResult summary =
+                new Nist90BResult("b1", 7.0, true, null, 2048L, start, end);
+        summary.assessmentRunId = runId;
+        summary.isRunSummary = true;
+        summary.persist();
+
+        for (int i = 0; i < 2; i++) {
+            Nist90BResult chunk =
+                    new Nist90BResult("b1", 7.0 - i * 0.1, true, null, 1024L, start, end);
+            chunk.assessmentRunId = runId;
+            chunk.chunkIndex = i;
+            chunk.isRunSummary = false;
+            chunk.persist();
+        }
+
+        long onlySummaries = Nist90BResult.count("isRunSummary = true");
+        assertThat(onlySummaries).isEqualTo(1L);
+
+        long onlyChunks = Nist90BResult.count("isRunSummary = false");
+        assertThat(onlyChunks).isEqualTo(2L);
     }
 
     private void clearAll() {
@@ -457,8 +649,12 @@ class NistValidationServiceAsyncTest {
                             assertThat(job.status).isEqualTo(JobStatus.COMPLETED);
                             assertThat(job.assessmentRunId).isNotNull();
                             assertThat(job.progressPercent).isEqualTo(100);
-                            assertThat(Nist90BResult.count("assessmentRunId", job.assessmentRunId))
-                                    .isGreaterThan(0);
+                            // Model C: must have exactly one run-summary row
+                            assertThat(
+                                            Nist90BResult.count(
+                                                    "assessmentRunId = ?1 AND isRunSummary = true",
+                                                    job.assessmentRunId))
+                                    .isEqualTo(1L);
                         });
     }
 

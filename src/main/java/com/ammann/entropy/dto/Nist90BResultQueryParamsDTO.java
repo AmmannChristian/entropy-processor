@@ -33,6 +33,14 @@ public class Nist90BResultQueryParamsDTO {
     public String to; // ISO-8601
 
     /**
+     * When true (default), return only the canonical run-summary rows (isRunSummary = true),
+     * ordered by executedAt DESC — one row per completed run.
+     * When false, return only per-chunk rows (isRunSummary = false), ordered by chunkIndex ASC.
+     */
+    @QueryParam("summaryOnly")
+    public boolean summaryOnly = true;
+
+    /**
      * Whitelisted sortable fields (Security Boundary).
      */
     private static final Set<String> SORTABLE_FIELDS =
@@ -47,6 +55,11 @@ public class Nist90BResultQueryParamsDTO {
     public PanacheQuery<Nist90BResult> buildQuery(SortRequestDTO sortRequest) {
         StringBuilder queryStr = new StringBuilder("1=1");
         Map<String, Object> params = new HashMap<>();
+
+        // summaryOnly=true (default): canonical run-summary rows only
+        // summaryOnly=false: per-chunk rows only (for forensic/detail views)
+        queryStr.append(" AND isRunSummary = :isRunSummary");
+        params.put("isRunSummary", summaryOnly);
 
         if (assessmentRunId != null) {
             queryStr.append(" AND assessmentRunId = :assessmentRunId");
@@ -72,8 +85,10 @@ public class Nist90BResultQueryParamsDTO {
 
         if (!orderBy.isEmpty()) {
             queryStr.append(" ORDER BY ").append(orderBy);
-        } else {
+        } else if (summaryOnly) {
             queryStr.append(" ORDER BY executedAt DESC");
+        } else {
+            queryStr.append(" ORDER BY chunkIndex ASC");
         }
 
         return Nist90BResult.find(queryStr.toString(), params);
@@ -92,6 +107,8 @@ public class Nist90BResultQueryParamsDTO {
                 + ", to='"
                 + to
                 + '\''
+                + ", summaryOnly="
+                + summaryOnly
                 + '}';
     }
 }

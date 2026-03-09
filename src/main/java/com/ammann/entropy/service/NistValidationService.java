@@ -544,9 +544,10 @@ public class NistValidationService {
 
         String batchId = events.getFirst().batchId;
         UUID assessmentRunId = UUID.randomUUID();
-        Nist90BResult entity =
+        Sp80090bOutcome outcome =
                 assess90B(assessmentSample, batchId, start, end, bearerToken, assessmentRunId);
-        NIST90BResultDTO result = entity.toDTO();
+        writeEstimatorsForRun(assessmentRunId, outcome.response(), 0);
+        NIST90BResultDTO result = outcome.entity().toDTO();
         LOG.infof(
                 "NIST SP 800-90B assessment complete: minEntropy=%.6f, passed=%b, bits=%d",
                 result.minEntropy(), result.passed(), result.bitsTested());
@@ -554,33 +555,37 @@ public class NistValidationService {
     }
 
     /**
-     * Runs NIST SP 800-90B entropy assessment via gRPC and persists the result.
+     * Pairs a persisted {@link Nist90BResult} chunk entity with its raw gRPC response.
      *
-     * @param bitstream   The bitstream to assess
-     * @param batchId     Batch ID for the result
-     * @param start       Start of time window
-     * @param end         End of time window
-     * @param bearerToken Optional bearer token for authentication (null = use OidcClientService)
-     * @return The persisted Nist90BResult entity
+     * <p>This record exists because callers need the gRPC response to extract estimator
+     * results after the chunk loop, but the entity must be persisted immediately during
+     * chunk processing. Returning both avoids a redundant gRPC call or database lookup.
      */
-    private Nist90BResult assess90B(
+    private record Sp80090bOutcome(Nist90BResult entity, Sp80090bAssessmentResponse response) {}
+
+    /**
+     * Runs a NIST SP 800-90B entropy assessment via gRPC for a single chunk, persists the
+     * result entity, and returns both the entity and the raw gRPC response.
+     *
+     * <p>This method does <em>not</em> write estimator rows. Callers must invoke
+     * {@link #writeEstimatorsForRun} explicitly after all chunks have been processed
+     * and the worst-minEntropy chunk has been identified.
+     *
+     * @param bitstream       bitstream to assess (one chunk)
+     * @param batchId         batch identifier for traceability
+     * @param start           start of the entropy data time window
+     * @param end             end of the entropy data time window
+     * @param bearerToken     optional bearer token (null falls back to OidcClientService)
+     * @param assessmentRunId run identifier shared across all chunks of a single job
+     * @return paired entity (already persisted and managed) and raw gRPC response
+     */
+    private Sp80090bOutcome assess90B(
             byte[] bitstream,
             String batchId,
             Instant start,
             Instant end,
             String bearerToken,
             UUID assessmentRunId) {
-        return assess90B(bitstream, batchId, start, end, bearerToken, assessmentRunId, true);
-    }
-
-    private Nist90BResult assess90B(
-            byte[] bitstream,
-            String batchId,
-            Instant start,
-            Instant end,
-            String bearerToken,
-            UUID assessmentRunId,
-            boolean persistEstimators) {
         if (sp80090bOverride == null && sp80090bClient == null) {
             LOG.warn("NIST SP 800-90B client not configured");
             recordFailureMetric();
@@ -623,10 +628,8 @@ public class NistValidationService {
             throw new NistException("NIST SP 800-90B gRPC call failed", e);
         }
 
-        // Use provided assessment run ID (passed from caller)
         long bitstreamLength = bitstream.length * 8L;
 
-        // Create aggregate result entity
         Nist90BResult entity =
                 new Nist90BResult(
                         batchId,
@@ -640,20 +643,32 @@ public class NistValidationService {
         entity.assessmentRunId = assessmentRunId;
         em.persist(entity);
 
-        // Persist ALL 14 estimators (10 Non-IID + 4 IID) with full metadata
-        // Only persisted when persistEstimators=true to avoid unique constraint violations
-        // in multi-chunk jobs where the same (assessmentRunId, testType, estimatorName) would
-        // repeat
-        if (persistEstimators) {
-            for (Sp80090bEstimatorResult est : entropyResult.getNonIidResultsList()) {
-                persistEstimator(assessmentRunId, TestType.NON_IID, est);
-            }
-            for (Sp80090bEstimatorResult est : entropyResult.getIidResultsList()) {
-                persistEstimator(assessmentRunId, TestType.IID, est);
-            }
-        }
+        return new Sp80090bOutcome(entity, entropyResult);
+    }
 
-        return entity;
+    /**
+     * Persists all 14 estimator rows (10 Non-IID + 4 IID) for a completed assessment run.
+     *
+     * <p>Must be called exactly once per run, after the chunk loop completes. The caller
+     * must pass the gRPC response from the chunk with the lowest minEntropy (the worst
+     * chunk), whose estimator values become the canonical result for the entire run.
+     * The database unique constraint {@code uq_estimator_per_run} prevents duplicate writes.
+     *
+     * @param assessmentRunId  run identifier shared across all chunks
+     * @param response         gRPC response from the worst-minEntropy chunk
+     * @param sourceChunkIndex 0-based index of the chunk whose response is used (for traceability)
+     */
+    private void writeEstimatorsForRun(
+            UUID assessmentRunId, Sp80090bAssessmentResponse response, int sourceChunkIndex) {
+        LOG.debugf(
+                "Writing estimators for run %s from source chunk %d",
+                assessmentRunId, sourceChunkIndex);
+        for (Sp80090bEstimatorResult est : response.getNonIidResultsList()) {
+            persistEstimator(assessmentRunId, TestType.NON_IID, est);
+        }
+        for (Sp80090bEstimatorResult est : response.getIidResultsList()) {
+            persistEstimator(assessmentRunId, TestType.IID, est);
+        }
     }
 
     /**
@@ -1220,12 +1235,15 @@ public class NistValidationService {
     }
 
     /**
-     * Async worker for SP 800-90B validation job.
-     * <p>
-     * Similar to SP 800-22 but with chunking for large bitstreams.
+     * Async worker for an SP 800-90B validation job.
      *
-     * @param jobId       Job ID to process
-     * @param bearerToken Bearer token for gRPC calls
+     * <p>Processes all chunks sequentially, persists per-chunk rows, then writes a single
+     * run-summary row (Model C) whose minEntropy equals the worst chunk and whose passed
+     * flag is the conjunction of all chunks. Estimator rows are sourced from the
+     * worst-minEntropy chunk via {@link #writeEstimatorsForRun}.
+     *
+     * @param jobId       job identifier to process
+     * @param bearerToken bearer token for gRPC authentication (may be null)
      */
     @Transactional
     public void processSp80090bValidationJob(UUID jobId, String bearerToken) {
@@ -1266,8 +1284,14 @@ public class NistValidationService {
 
             String batchId = events.getFirst().batchId;
 
-            // Process each chunk
-            boolean isLastChunk = false;
+            // Model C aggregation: the canonical run result uses the minimum minEntropy
+            // across all chunks and requires every chunk to pass.
+            double worstMinEntropy = Double.MAX_VALUE;
+            Sp80090bAssessmentResponse worstResponse = null;
+            int worstChunkIndex = -1;
+            boolean allPassed = true;
+            long totalBits = 0L;
+
             for (int i = 0; i < chunks.size(); i++) {
                 byte[] chunk = chunks.get(i);
 
@@ -1275,28 +1299,26 @@ public class NistValidationService {
                         "SP 800-90B job %s: processing chunk %d/%d (%d bytes)",
                         jobId, i + 1, chunks.size(), chunk.length);
 
-                // Persist estimators only for the last chunk: the unique constraint
-                // (assessment_run_id, test_type, estimator_name) would be violated for
-                // repeated chunks since all chunks share the same assessmentRunId.
-                if (i == chunks.size() - 1) {
-                    isLastChunk = true;
-                }
-
-                // Run assessment on chunk (pass assessmentRunId to ensure consistency)
-                Nist90BResult entity =
-                        assess90B(
-                                chunk,
-                                batchId,
-                                job.windowStart,
-                                job.windowEnd,
-                                bearerToken,
-                                assessmentRunId,
-                                isLastChunk);
+                Sp80090bOutcome outcome =
+                        assess90B(chunk, batchId, job.windowStart, job.windowEnd,
+                                bearerToken, assessmentRunId);
 
                 // Update the persisted entity with chunk metadata
+                Nist90BResult entity = outcome.entity();
                 entity.chunkIndex = i;
                 entity.chunkCount = chunks.size();
+                // Per-chunk row: isRunSummary remains false (default)
                 entity.persist();
+
+                // Track the chunk with the lowest minEntropy; strict < ensures the first chunk wins ties
+                if (outcome.response().getMinEntropy() < worstMinEntropy) {
+                    worstMinEntropy = outcome.response().getMinEntropy();
+                    worstResponse = outcome.response();
+                    worstChunkIndex = i;
+                }
+
+                allPassed &= outcome.response().getPassed(); // Model C: run passes only if all chunks pass
+                totalBits += entity.bitsTested != null ? entity.bitsTested : 0L;
 
                 // Update progress
                 job.currentChunk = i + 1;
@@ -1307,6 +1329,37 @@ public class NistValidationService {
                         "SP 800-90B job %s: chunk %d/%d complete (%d%%) minEntropy=%.6f",
                         jobId, i + 1, chunks.size(), job.progressPercent, entity.minEntropy);
             }
+
+            // Invariant: the run-summary row (isRunSummary=true) is written only after
+            // every chunk has been assessed and persisted. Its absence indicates an
+            // incomplete run; partial per-chunk rows may exist but are not canonical.
+            String summaryDetails;
+            try {
+                summaryDetails = JSON_MAPPER.createObjectNode()
+                        .put("model", "C")
+                        .put("chunks", chunks.size())
+                        .put("rule", "min_entropy=min,passed=all")
+                        .put("estimator_source_chunk", worstChunkIndex)
+                        .toString();
+            } catch (Exception e) {
+                summaryDetails = null;
+            }
+
+            Nist90BResult summary = new Nist90BResult(
+                    batchId,
+                    worstMinEntropy,
+                    allPassed,
+                    summaryDetails,
+                    totalBits,
+                    job.windowStart,
+                    job.windowEnd);
+            summary.assessmentRunId = assessmentRunId;
+            summary.chunkCount = chunks.size();
+            summary.chunkIndex = null;
+            summary.isRunSummary = true;
+            em.persist(summary);
+
+            writeEstimatorsForRun(assessmentRunId, worstResponse, worstChunkIndex);
 
             job.status = JobStatus.COMPLETED;
             job.completedAt = Instant.now();
@@ -1454,14 +1507,16 @@ public class NistValidationService {
                     "Job not completed yet: " + jobId + " (status: " + job.status + ")");
         }
 
-        // Fetch results by assessment_run_id
-        List<Nist90BResult> results = Nist90BResult.list("assessmentRunId", job.assessmentRunId);
-        if (results.isEmpty()) {
+        // Fetch the canonical run-summary row (isRunSummary=true). Absent for
+        // incomplete runs and runs that predate the Model C schema.
+        Nist90BResult summary = Nist90BResult
+                .find("assessmentRunId = ?1 AND isRunSummary = true", job.assessmentRunId)
+                .firstResult();
+        if (summary == null) {
             throw new ValidationException(
-                    "No results found for assessment run: " + job.assessmentRunId);
+                    "No run-summary row found for assessment run of job " + jobId
+                            + "; the run may predate the Model C schema or may still be in progress");
         }
-
-        // For now, return the first result (or aggregate multiple chunks if needed)
-        return results.getFirst().toDTO();
+        return summary.toDTO();
     }
 }

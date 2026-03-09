@@ -203,7 +203,9 @@ public class ValidationResource {
                         "from",
                         filters.from,
                         "to",
-                        filters.to);
+                        filters.to,
+                        "summaryOnly",
+                        filters.summaryOnly);
         long total = cacheService.getCachedCount(cacheKey, query::count);
 
         List<Nist90BResult> results = query.page(pageRequest.page, pageRequest.size).list();
