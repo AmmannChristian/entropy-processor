@@ -154,5 +154,52 @@ class Nist90BResultTest {
             assertThat(result.executedAt).isNotNull();
             assertThat(result.executedAt).isBeforeOrEqualTo(Instant.now());
         }
+
+        @Test
+        void sampleSizeMeetsNistMinimumDefaultsToNull() {
+            Nist90BResult result = new Nist90BResult();
+            assertThat(result.sampleSizeMeetsNistMinimum).isNull();
+        }
+
+        @Test
+        void sampleSizeMeetsNistMinimumPropagatedToDTO() {
+            Instant start = Instant.parse("2024-01-01T00:00:00Z");
+            Instant end = Instant.parse("2024-01-01T01:00:00Z");
+
+            Nist90BResult conformant =
+                    new Nist90BResult("batch-1", 7.5, true, null, 8_000_000L, start, end);
+            conformant.sampleSizeMeetsNistMinimum = true;
+            conformant.assessmentScope = "NIST_SINGLE_SAMPLE";
+
+            NIST90BResultDTO conformantDto = conformant.toDTO();
+            assertThat(conformantDto.sampleSizeMeetsNistMinimum()).isTrue();
+            assertThat(conformantDto.assessmentScope()).isEqualTo("NIST_SINGLE_SAMPLE");
+
+            Nist90BResult undersized =
+                    new Nist90BResult("batch-2", 6.0, true, null, 400_000L, start, end);
+            undersized.sampleSizeMeetsNistMinimum = false;
+            undersized.assessmentScope = "NIST_SINGLE_SAMPLE";
+
+            NIST90BResultDTO undersizedDto = undersized.toDTO();
+            assertThat(undersizedDto.sampleSizeMeetsNistMinimum()).isFalse();
+            assertThat(undersizedDto.assessmentScope()).isEqualTo("NIST_SINGLE_SAMPLE");
+        }
+
+        @Test
+        void sampleSizeMeetsNistMinimumNullForSummaryRows() {
+            Instant start = Instant.parse("2024-01-01T00:00:00Z");
+            Instant end = Instant.parse("2024-01-01T01:00:00Z");
+
+            Nist90BResult summary =
+                    new Nist90BResult("batch-1", 7.5, true, null, 8_000_000L, start, end);
+            summary.isRunSummary = true;
+            summary.assessmentScope = "PRODUCT_WINDOW_SUMMARY";
+            // sampleSizeMeetsNistMinimum intentionally not set — summary rows don't represent a
+            // single sample
+
+            NIST90BResultDTO dto = summary.toDTO();
+            assertThat(dto.sampleSizeMeetsNistMinimum()).isNull();
+            assertThat(dto.assessmentScope()).isEqualTo("PRODUCT_WINDOW_SUMMARY");
+        }
     }
 }

@@ -204,7 +204,11 @@ public class EntropyData extends PanacheEntity {
      * Optimized query using hw_timestamp_ns index.
      */
     public static List<EntropyData> findInTimeWindow(Instant start, Instant end) {
-        return find("serverReceived BETWEEN ?1 AND ?2 ORDER BY hwTimestampNs", start, end).list();
+        return find(
+                        "serverReceived >= ?1 AND serverReceived < ?2 ORDER BY hwTimestampNs",
+                        start,
+                        end)
+                .list();
     }
 
     /**

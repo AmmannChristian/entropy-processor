@@ -15,12 +15,12 @@ class NistAndStatsDtoTest {
     void nistSuiteRecommendationCoversAllBranches() {
         NISTSuiteResultDTO ok =
                 new NISTSuiteResultDTO(List.of(), 1, 1, 0, 1.0, true, Instant.now(), 1024L, null);
-        assertThat(ok.allTestsPassed()).isTrue();
+        assertThat(ok.suitePassed()).isTrue();
         assertThat(ok.getRecommendation()).contains("meets");
 
         NISTSuiteResultDTO minor =
                 new NISTSuiteResultDTO(List.of(), 10, 8, 2, 0.8, false, Instant.now(), 1024L, null);
-        assertThat(minor.allTestsPassed()).isFalse();
+        assertThat(minor.suitePassed()).isFalse();
         assertThat(minor.getRecommendation()).contains("Minor randomness issues");
 
         NISTSuiteResultDTO critical =

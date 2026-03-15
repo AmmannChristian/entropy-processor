@@ -40,7 +40,6 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ForkJoinPool;
-import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
@@ -60,7 +59,7 @@ import org.jboss.logging.Logger;
 public class NistValidationService {
 
     private static final Logger LOG = Logger.getLogger(NistValidationService.class);
-    private static final int DEFAULT_SP80022_MAX_BYTES = 1_250_000;
+    private static final int DEFAULT_SP80022_MAX_BYTES = 12_500_000;
     private static final long DEFAULT_SP80022_MIN_BITS = 1_000_000L;
     private static final int DEFAULT_SP80090B_MAX_BYTES = 1_000_000;
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
@@ -84,6 +83,9 @@ public class NistValidationService {
 
     @ConfigProperty(name = "nist.sp80090b.max-bytes", defaultValue = "1000000")
     int sp80090bMaxBytes;
+
+    @ConfigProperty(name = "nist.sp80090b.sample-interval-seconds", defaultValue = "3600")
+    int sp80090bSampleIntervalSeconds;
 
     @Inject TransactionSynchronizationRegistry transactionSynchronizationRegistry;
     @Inject Instance<NistValidationService> selfReference;
@@ -239,7 +241,7 @@ public class NistValidationService {
 
         LOG.infof("Loaded %d entropy events from TimescaleDB", events.size());
 
-        // Step 2: Extract whitened entropy bits
+        // Extract whitened entropy bits
         byte[] bitstream = extractWhitenedBits(events);
         long bitstreamLengthBits = bitstream.length * 8L;
         long minBitsRequired = getEffectiveSp80022MinBits();
@@ -254,75 +256,81 @@ public class NistValidationService {
                             "Need at least %d bits, got %d", minBitsRequired, bitstreamLengthBits));
         }
 
-        validateSp80022ChunkConfig();
-        List<byte[]> chunks = splitSp80022Chunks(bitstream);
-        LOG.infof(
-                "NIST SP 800-22 run window=%s..%s totalBytes=%d totalBits=%d chunks=%d"
-                        + " maxChunkBytes=%d",
-                start,
-                end,
-                bitstream.length,
-                bitstreamLengthBits,
-                chunks.size(),
-                getEffectiveSp80022MaxBytes());
+        int maxBytes = getEffectiveSp80022MaxBytes();
 
-        String batchId = events.getFirst().batchId;
-        UUID testSuiteRunId = UUID.randomUUID();
-        List<NISTTestResultDTO> testDTOs = new ArrayList<>();
-        List<NistTestResult> entitiesToPersist = new ArrayList<>();
-        int totalTests = 0;
-        int passedCount = 0;
-        boolean allChunksCompliant = true;
-
-        for (int i = 0; i < chunks.size(); i++) {
-            byte[] chunk = chunks.get(i);
-            long chunkBits = chunk.length * 8L;
-
-            Sp80022TestResponse grpcResult = runSp80022Tests(chunk, bearerToken);
-            int chunkPassedCount =
-                    (int)
-                            grpcResult.getResultsList().stream()
-                                    .filter(Sp80022TestResult::getPassed)
-                                    .count();
-            int chunkTotalTests = grpcResult.getTestsRun();
-
-            LOG.infof(
-                    "NIST SP 800-22 chunk=%d/%d bytes=%d bits=%d passed=%d/%d compliant=%b"
-                            + " passRate=%.6f",
-                    i + 1,
-                    chunks.size(),
-                    chunk.length,
-                    chunkBits,
-                    chunkPassedCount,
-                    chunkTotalTests,
-                    grpcResult.getNistCompliant(),
-                    grpcResult.getOverallPassRate());
-
-            collectSp80022ChunkResults(
-                    grpcResult,
-                    testSuiteRunId,
-                    batchId,
+        // Single-sequence mode: if data fits within MaxBits, submit as one call
+        if (bitstream.length <= maxBytes) {
+            return validateSp80022SingleSequence(
+                    bitstream,
+                    bitstreamLengthBits,
                     start,
                     end,
-                    i + 1,
-                    chunks.size(),
-                    chunkBits,
-                    entitiesToPersist,
-                    testDTOs);
-
-            totalTests += chunkTotalTests;
-            passedCount += chunkPassedCount;
-            allChunksCompliant &= grpcResult.getNistCompliant();
+                    events.getFirst().batchId,
+                    bearerToken);
         }
 
+        // Multi-sequence mode: proper NIST SP 800-22 §4.2.1 analysis
+        return validateSp80022MultiSequence(
+                bitstream, bitstreamLengthBits, start, end, events.getFirst().batchId, bearerToken);
+    }
+
+    /**
+     * Single-sequence SP 800-22 validation: submits the full bitstream as one continuous sequence.
+     * This is the semantically correct mode for typical hourly windows.
+     */
+    private NISTSuiteResultDTO validateSp80022SingleSequence(
+            byte[] bitstream,
+            long bitstreamLengthBits,
+            Instant start,
+            Instant end,
+            String batchId,
+            String bearerToken) {
+
+        LOG.infof(
+                "NIST SP 800-22 single-sequence mode: window=%s..%s bytes=%d bits=%d",
+                start, end, bitstream.length, bitstreamLengthBits);
+
+        UUID testSuiteRunId = UUID.randomUUID();
+        Sp80022TestResponse grpcResult = runSp80022Tests(bitstream, bearerToken);
+
+        int passedCount =
+                (int)
+                        grpcResult.getResultsList().stream()
+                                .filter(Sp80022TestResult::getPassed)
+                                .count();
+        int totalTests = grpcResult.getTestsRun();
         int failedCount = totalTests - passedCount;
         double overallPassRate = totalTests > 0 ? (double) passedCount / totalTests : 0.0;
+
+        List<NISTTestResultDTO> testDTOs = new ArrayList<>();
+        List<NistTestResult> entitiesToPersist = new ArrayList<>();
+
+        for (Sp80022TestResult test : grpcResult.getResultsList()) {
+            NistTestResult entity =
+                    new NistTestResult(
+                            testSuiteRunId,
+                            test.getName(),
+                            test.getPassed(),
+                            test.getPValue(),
+                            start,
+                            end);
+            entity.dataSampleSize = bitstreamLengthBits;
+            entity.bitsTested = bitstreamLengthBits;
+            entity.batchId = batchId;
+            entity.chunkIndex = 1;
+            entity.chunkCount = 1;
+            entity.aggregationMethod = "SINGLE_SEQUENCE";
+            entity.details =
+                    test.hasWarning() ? ensureJsonDocument(test.getWarning(), "warning") : null;
+            entitiesToPersist.add(entity);
+            testDTOs.add(entity.toDTO());
+        }
+
         persistNistTestResultsBatch(entitiesToPersist);
 
         LOG.infof(
-                "NIST SP 800-22 run completed: runId=%s passed=%d/%d passRate=%.6f"
-                        + " allChunksCompliant=%b",
-                testSuiteRunId, passedCount, totalTests, overallPassRate, allChunksCompliant);
+                "NIST SP 800-22 single-sequence completed: runId=%s passed=%d/%d passRate=%.6f",
+                testSuiteRunId, passedCount, totalTests, overallPassRate);
 
         return new NISTSuiteResultDTO(
                 testDTOs,
@@ -330,10 +338,298 @@ public class NistValidationService {
                 passedCount,
                 failedCount,
                 overallPassRate,
-                allChunksCompliant,
+                failedCount == 0,
                 Instant.now(),
                 bitstreamLengthBits,
-                new TimeWindowDTO(start, end, Duration.between(start, end).toHours()));
+                new TimeWindowDTO(start, end, Duration.between(start, end).toHours()),
+                "SINGLE_SEQUENCE");
+    }
+
+    /**
+     * Multi-sequence SP 800-22 validation per NIST SP 800-22 §4.2.1.
+     *
+     * <p>Splits the bitstream into N equal-length sequences (N >= 55), runs each independently,
+     * then aggregates p-values per test using chi-square uniformity test (10-bin, 9-df).
+     * Refuses validation if the bitstream cannot produce >= 55 sequences of >= MinBits each.
+     */
+    private NISTSuiteResultDTO validateSp80022MultiSequence(
+            byte[] bitstream,
+            long bitstreamLengthBits,
+            Instant start,
+            Instant end,
+            String batchId,
+            String bearerToken) {
+
+        int maxBytes = getEffectiveSp80022MaxBytes();
+        int minBytesPerSequence = (int) Math.ceil(getEffectiveSp80022MinBits() / 8.0);
+        int minSequences = 55;
+
+        // Compute sequence count: N equal-length sequences, each <= maxBytes and >= minBytes
+        int maxSequencesBySize = bitstream.length / minBytesPerSequence;
+        if (maxSequencesBySize < minSequences) {
+            throw new NistException(
+                    String.format(
+                            "Multi-sequence mode requires >= %d sequences of >= %d bytes each."
+                                + " Bitstream (%d bytes) can produce at most %d sequences. Reduce"
+                                + " the window size to fit within single-sequence limit (%d"
+                                + " bytes).",
+                            minSequences,
+                            minBytesPerSequence,
+                            bitstream.length,
+                            maxSequencesBySize,
+                            maxBytes));
+        }
+
+        // Choose N such that each sequence fits within maxBytes
+        int sequenceCount = Math.max(minSequences, (bitstream.length + maxBytes - 1) / maxBytes);
+        int sequenceLength = bitstream.length / sequenceCount;
+
+        // Verify each sequence meets minimum
+        if (sequenceLength < minBytesPerSequence) {
+            throw new NistException(
+                    String.format(
+                            "Multi-sequence mode: %d sequences of %d bytes each is below minimum %d"
+                                    + " bytes.",
+                            sequenceCount, sequenceLength, minBytesPerSequence));
+        }
+
+        LOG.infof(
+                "NIST SP 800-22 multi-sequence mode: window=%s..%s bytes=%d sequences=%d"
+                        + " seqLength=%d",
+                start, end, bitstream.length, sequenceCount, sequenceLength);
+
+        UUID testSuiteRunId = UUID.randomUUID();
+        // Collect p-values and pass counts per test name across all sequences
+        Map<String, List<Double>> pValuesByTest = new LinkedHashMap<>();
+        Map<String, Integer> passCountByTest = new LinkedHashMap<>();
+        List<NistTestResult> entitiesToPersist = new ArrayList<>();
+
+        // Truncate to exact multiple of sequenceLength so all sequences are equal length (§4.2.1)
+        int usableLength = sequenceCount * sequenceLength;
+        byte[] trimmedBitstream = Arrays.copyOf(bitstream, usableLength);
+
+        for (int i = 0; i < sequenceCount; i++) {
+            int seqStart = i * sequenceLength;
+            int seqEnd = seqStart + sequenceLength;
+            byte[] sequence = Arrays.copyOfRange(trimmedBitstream, seqStart, seqEnd);
+
+            Sp80022TestResponse grpcResult = runSp80022Tests(sequence, bearerToken);
+
+            long seqBits = sequence.length * 8L;
+            for (Sp80022TestResult test : grpcResult.getResultsList()) {
+                pValuesByTest
+                        .computeIfAbsent(test.getName(), k -> new ArrayList<>())
+                        .add(test.getPValue());
+                if (test.getPassed()) {
+                    passCountByTest.merge(test.getName(), 1, Integer::sum);
+                } else {
+                    passCountByTest.putIfAbsent(test.getName(), 0);
+                }
+
+                NistTestResult entity =
+                        new NistTestResult(
+                                testSuiteRunId,
+                                test.getName(),
+                                test.getPassed(),
+                                test.getPValue(),
+                                start,
+                                end);
+                entity.dataSampleSize = seqBits;
+                entity.bitsTested = seqBits;
+                entity.batchId = batchId;
+                entity.chunkIndex = i + 1;
+                entity.chunkCount = sequenceCount;
+                entity.aggregationMethod = "MULTI_SEQUENCE_CHI2";
+                entity.details =
+                        test.hasWarning() ? ensureJsonDocument(test.getWarning(), "warning") : null;
+                entitiesToPersist.add(entity);
+            }
+
+            LOG.infof(
+                    "NIST SP 800-22 multi-sequence: sequence %d/%d complete (%d bytes)",
+                    i + 1, sequenceCount, sequence.length);
+        }
+
+        persistNistTestResultsBatch(entitiesToPersist);
+
+        // NIST SP 800-22 §4.2.1 two-check aggregation per test:
+        // 1. Chi-square uniformity on p-value distribution
+        // 2. Pass-proportion: proportion of sequences passing must exceed threshold
+        double alpha = 0.01;
+        double proportionThreshold =
+                1.0 - alpha - 3.0 * Math.sqrt(alpha * (1.0 - alpha) / sequenceCount);
+
+        List<NISTTestResultDTO> aggregatedDTOs = new ArrayList<>();
+        int passedCount = 0;
+
+        for (Map.Entry<String, List<Double>> entry : pValuesByTest.entrySet()) {
+            String testName = entry.getKey();
+            List<Double> pValues = entry.getValue();
+
+            double chi2PValue = computeChiSquareUniformity(pValues);
+            boolean chi2Passed = chi2PValue >= 0.0001; // NIST threshold for uniformity
+
+            int passes = passCountByTest.getOrDefault(testName, 0);
+            double proportion = (double) passes / sequenceCount;
+            boolean proportionPassed = proportion >= proportionThreshold;
+
+            boolean testPassed = chi2Passed && proportionPassed;
+            if (testPassed) passedCount++;
+
+            String details = null;
+            if (!proportionPassed) {
+                details =
+                        ensureJsonDocument(
+                                String.format(
+                                        "passRatio=%.4f threshold=%.4f chi2PValue=%.6f",
+                                        proportion, proportionThreshold, chi2PValue),
+                                "proportion_fail");
+            }
+
+            aggregatedDTOs.add(
+                    new NISTTestResultDTO(
+                            testName,
+                            testPassed,
+                            chi2PValue,
+                            testPassed ? "PASS" : "FAIL",
+                            Instant.now(),
+                            details,
+                            "MULTI_SEQUENCE_CHI2",
+                            null,
+                            null,
+                            null));
+        }
+
+        int totalTests = aggregatedDTOs.size();
+        int failedCount = totalTests - passedCount;
+        double overallPassRate = totalTests > 0 ? (double) passedCount / totalTests : 0.0;
+
+        LOG.infof(
+                "NIST SP 800-22 multi-sequence completed: runId=%s sequences=%d"
+                        + " passed=%d/%d passRate=%.6f",
+                testSuiteRunId, sequenceCount, passedCount, totalTests, overallPassRate);
+
+        return new NISTSuiteResultDTO(
+                aggregatedDTOs,
+                totalTests,
+                passedCount,
+                failedCount,
+                overallPassRate,
+                failedCount == 0,
+                Instant.now(),
+                bitstreamLengthBits,
+                new TimeWindowDTO(start, end, Duration.between(start, end).toHours()),
+                "MULTI_SEQUENCE_CHI2");
+    }
+
+    /**
+     * Computes chi-square uniformity p-value for a list of p-values per NIST SP 800-22 §4.2.1.
+     * Bins p-values into 10 equal-width intervals [0,0.1)...[0.9,1.0) and computes chi-square
+     * statistic with 9 degrees of freedom.
+     */
+    private double computeChiSquareUniformity(List<Double> pValues) {
+        if (pValues.isEmpty()) return 0.0;
+
+        int numBins = 10;
+        int[] bins = new int[numBins];
+        int validCount = 0;
+
+        for (double pval : pValues) {
+            if (pval < 0.0 || pval > 1.0) continue;
+            int binIndex = Math.min((int) (pval * numBins), numBins - 1);
+            bins[binIndex]++;
+            validCount++;
+        }
+
+        if (validCount == 0) return 0.0;
+
+        double expected = (double) validCount / numBins;
+        double chi2 = 0.0;
+        for (int observed : bins) {
+            double diff = observed - expected;
+            chi2 += (diff * diff) / expected;
+        }
+
+        // Survival function of chi-squared distribution with df=9
+        // Using igamc (regularized upper incomplete gamma function)
+        double df = numBins - 1.0;
+        return regularizedGammaQ(df / 2.0, chi2 / 2.0);
+    }
+
+    /**
+     * Regularized upper incomplete gamma function Q(a, x) = 1 - P(a, x).
+     * Used for computing chi-square p-values. Uses series expansion for small x
+     * and continued fraction for large x.
+     */
+    private double regularizedGammaQ(double a, double x) {
+        if (x < 0.0 || a <= 0.0) return 0.0;
+        if (x == 0.0) return 1.0;
+
+        // Use series for x < a+1, continued fraction otherwise
+        if (x < a + 1.0) {
+            return 1.0 - regularizedGammaP(a, x);
+        }
+        return regularizedGammaCF(a, x);
+    }
+
+    /**
+     * Regularized lower incomplete gamma P(a, x) via series expansion.
+     */
+    private double regularizedGammaP(double a, double x) {
+        double lnGammaA = lnGamma(a);
+        double ap = a;
+        double sum = 1.0 / a;
+        double del = sum;
+        for (int n = 1; n <= 200; n++) {
+            ap += 1.0;
+            del *= x / ap;
+            sum += del;
+            if (Math.abs(del) < Math.abs(sum) * 1e-14) break;
+        }
+        return sum * Math.exp(-x + a * Math.log(x) - lnGammaA);
+    }
+
+    /**
+     * Regularized upper incomplete gamma Q(a, x) via continued fraction.
+     */
+    private double regularizedGammaCF(double a, double x) {
+        double lnGammaA = lnGamma(a);
+        double b = x + 1.0 - a;
+        double c = 1.0 / 1e-30;
+        double d = 1.0 / b;
+        double h = d;
+        for (int i = 1; i <= 200; i++) {
+            double an = -i * (i - a);
+            b += 2.0;
+            d = an * d + b;
+            if (Math.abs(d) < 1e-30) d = 1e-30;
+            c = b + an / c;
+            if (Math.abs(c) < 1e-30) c = 1e-30;
+            d = 1.0 / d;
+            double del = d * c;
+            h *= del;
+            if (Math.abs(del - 1.0) < 1e-14) break;
+        }
+        return Math.exp(-x + a * Math.log(x) - lnGammaA) * h;
+    }
+
+    /**
+     * Natural log of the gamma function (Lanczos approximation).
+     */
+    private double lnGamma(double x) {
+        double[] cof = {
+            76.18009172947146, -86.50532032941677, 24.01409824083091,
+            -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5
+        };
+        double y = x;
+        double tmp = x + 5.5;
+        tmp -= (x + 0.5) * Math.log(tmp);
+        double ser = 1.000000000190015;
+        for (double co : cof) {
+            y += 1.0;
+            ser += co / y;
+        }
+        return -tmp + Math.log(2.5066282746310005 * ser / x);
     }
 
     /**
@@ -369,39 +665,6 @@ public class NistValidationService {
             }
             recordFailureMetric();
             throw new NistException("NIST gRPC call failed", e);
-        }
-    }
-
-    private void collectSp80022ChunkResults(
-            Sp80022TestResponse grpcResult,
-            UUID testSuiteRunId,
-            String batchId,
-            Instant start,
-            Instant end,
-            int chunkIndex,
-            int chunkCount,
-            long chunkBits,
-            List<NistTestResult> entitiesToPersist,
-            List<NISTTestResultDTO> testDTOs) {
-        for (Sp80022TestResult test : grpcResult.getResultsList()) {
-            NistTestResult entity =
-                    new NistTestResult(
-                            testSuiteRunId,
-                            test.getName(),
-                            test.getPassed(),
-                            test.getPValue(),
-                            start,
-                            end);
-            entity.dataSampleSize = chunkBits;
-            entity.bitsTested = chunkBits;
-            entity.batchId = batchId;
-            entity.chunkIndex = chunkIndex;
-            entity.chunkCount = chunkCount;
-            entity.details =
-                    test.hasWarning() ? ensureJsonDocument(test.getWarning(), "warning") : null;
-
-            entitiesToPersist.add(entity);
-            testDTOs.add(entity.toDTO());
         }
     }
 
@@ -527,31 +790,163 @@ public class NistValidationService {
             throw new NistException("No usable entropy bitstream in specified window");
         }
 
-        int sourceBytes = bitstream.length;
         int maxBytes = getEffectiveSp80090bMaxBytes();
-        byte[] assessmentSample = bitstream;
-        if (sourceBytes > maxBytes) {
-            assessmentSample = Arrays.copyOf(bitstream, maxBytes);
-            LOG.warnf(
-                    "NIST SP 800-90B input exceeds limit: sourceBytes=%d maxBytes=%d. Truncating"
-                            + " assessment sample.",
-                    sourceBytes, maxBytes);
-        }
+        long windowDurationSeconds = computeWindowDurationSeconds(events, start, end);
+        List<int[]> samplePositions =
+                compute90BSamplePositions(bitstream.length, maxBytes, windowDurationSeconds);
+        int sampleCount = samplePositions.size();
 
         LOG.infof(
-                "NIST SP 800-90B run window=%s..%s sourceBytes=%d assessmentBytes=%d",
-                start, end, sourceBytes, assessmentSample.length);
+                "NIST SP 800-90B run window=%s..%s sourceBytes=%d sampleCount=%d sampleSize=%d"
+                        + " windowDuration=%ds",
+                start, end, bitstream.length, sampleCount, maxBytes, windowDurationSeconds);
 
         String batchId = events.getFirst().batchId;
         UUID assessmentRunId = UUID.randomUUID();
-        Sp80090bOutcome outcome =
-                assess90B(assessmentSample, batchId, start, end, bearerToken, assessmentRunId);
-        writeEstimatorsForRun(assessmentRunId, outcome.response(), 0);
-        NIST90BResultDTO result = outcome.entity().toDTO();
+        int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
+
+        double worstMinEntropy = Double.MAX_VALUE;
+        Sp80090bAssessmentResponse worstResponse = null;
+        int worstSampleIndex = 0;
+        boolean allPassed = true;
+        long totalBits = 0L;
+
+        for (int i = 0; i < sampleCount; i++) {
+            int[] pos = samplePositions.get(i);
+            int sampleStart = pos[0];
+            int sampleEnd = pos[1];
+            byte[] sample = Arrays.copyOfRange(bitstream, sampleStart, sampleEnd);
+
+            // Resolve hwTimestampNs for first and last events contributing to this sample
+            int firstEventIndex = sampleStart / bytesPerEvent;
+            int lastEventIndex = Math.max(firstEventIndex, (sampleEnd - 1) / bytesPerEvent);
+            Instant firstEventTs = resolveEventTimestamp(events, firstEventIndex);
+            Instant lastEventTs = resolveEventTimestamp(events, lastEventIndex);
+
+            Sp80090bOutcome outcome =
+                    assess90B(sample, batchId, start, end, bearerToken, assessmentRunId);
+
+            Nist90BResult entity = outcome.entity();
+            entity.sampleIndex = i + 1;
+            entity.sampleCount = sampleCount;
+            entity.sampleByteOffsetStart = (long) sampleStart;
+            entity.sampleByteOffsetEnd = (long) sampleEnd;
+            entity.sampleFirstEventTimestamp = firstEventTs;
+            entity.sampleLastEventTimestamp = lastEventTs;
+            entity.assessmentScope = "NIST_SINGLE_SAMPLE";
+            long actualSampleBytes = sampleEnd - sampleStart;
+            entity.sampleSizeMeetsNistMinimum = actualSampleBytes >= getEffectiveSp80090bMaxBytes();
+            em.persist(entity);
+
+            if (outcome.response().getMinEntropy() < worstMinEntropy) {
+                worstMinEntropy = outcome.response().getMinEntropy();
+                worstResponse = outcome.response();
+                worstSampleIndex = i;
+            }
+
+            allPassed &= outcome.response().getPassed();
+            totalBits += entity.bitsTested != null ? entity.bitsTested : 0L;
+
+            LOG.infof(
+                    "NIST SP 800-90B sample %d/%d complete: minEntropy=%.6f passed=%b"
+                            + " byteRange=[%d,%d)",
+                    i + 1, sampleCount, entity.minEntropy, entity.passed, sampleStart, sampleEnd);
+        }
+
+        // Write estimators from worst sample
+        writeEstimatorsForRun(assessmentRunId, worstResponse, worstSampleIndex);
+
+        // Create run-summary row (product-defined aggregation)
+        Nist90BResult summary =
+                new Nist90BResult(batchId, worstMinEntropy, allPassed, null, totalBits, start, end);
+        summary.assessmentRunId = assessmentRunId;
+        summary.isRunSummary = true;
+        summary.sampleCount = sampleCount;
+        summary.assessmentScope = "PRODUCT_WINDOW_SUMMARY";
+        em.persist(summary);
+
+        NIST90BResultDTO result = summary.toDTO();
         LOG.infof(
-                "NIST SP 800-90B assessment complete: minEntropy=%.6f, passed=%b, bits=%d",
-                result.minEntropy(), result.passed(), result.bitsTested());
+                "NIST SP 800-90B assessment complete: minEntropy=%.6f, passed=%b, samples=%d,"
+                        + " totalBits=%d",
+                result.minEntropy(), result.passed(), sampleCount, totalBits);
         return result;
+    }
+
+    /**
+     * Computes evenly-spaced sample positions across the bitstream for SP 800-90B multi-point
+     * sampling. Each sample is exactly {@code sampleSize} bytes. Sample count is derived from
+     * the actual observation window duration and configured sample interval, not from data size.
+     *
+     * @param totalBytes            total bitstream length
+     * @param sampleSize            bytes per sample (typically 1,000,000)
+     * @param windowDurationSeconds actual observation span in seconds (from first to last event)
+     * @return list of [startOffset, endOffset) pairs
+     */
+    List<int[]> compute90BSamplePositions(
+            int totalBytes, int sampleSize, long windowDurationSeconds) {
+        if (totalBytes <= sampleSize) {
+            return List.of(new int[] {0, totalBytes});
+        }
+
+        // Time-based sample count: one sample per configured interval
+        int timeBased =
+                Math.max(
+                        1,
+                        (int)
+                                Math.floor(
+                                        (double) windowDurationSeconds
+                                                / sp80090bSampleIntervalSeconds));
+        // Cannot have more samples than data allows
+        int maxSamples = totalBytes / sampleSize;
+        int sampleCount = Math.min(timeBased, maxSamples);
+
+        if (sampleCount <= 1) {
+            return List.of(new int[] {0, Math.min(totalBytes, sampleSize)});
+        }
+
+        // Evenly-spaced: distribute sampleCount samples across totalBytes
+        List<int[]> positions = new ArrayList<>();
+        double step = (double) (totalBytes - sampleSize) / (sampleCount - 1);
+        for (int i = 0; i < sampleCount; i++) {
+            int startOffset = (int) Math.round(i * step);
+            startOffset = Math.min(startOffset, totalBytes - sampleSize);
+            positions.add(new int[] {startOffset, startOffset + sampleSize});
+        }
+        return positions;
+    }
+
+    /**
+     * Resolves the hwTimestampNs of the event at the given index, converted to an Instant.
+     */
+    private Instant resolveEventTimestamp(List<EntropyData> events, int eventIndex) {
+        if (eventIndex < 0 || eventIndex >= events.size()) {
+            return null;
+        }
+        Long hwNs = events.get(eventIndex).hwTimestampNs;
+        if (hwNs == null) {
+            return null;
+        }
+        return Instant.ofEpochSecond(hwNs / 1_000_000_000L, hwNs % 1_000_000_000L);
+    }
+
+    /**
+     * Computes the actual observation window duration in seconds from event hardware timestamps.
+     * Falls back to the requested window bounds if events lack hardware timestamps.
+     */
+    private long computeWindowDurationSeconds(
+            List<EntropyData> events, Instant start, Instant end) {
+        if (events.size() >= 2) {
+            Long firstHw = events.getFirst().hwTimestampNs;
+            Long lastHw = events.getLast().hwTimestampNs;
+            if (firstHw != null && lastHw != null && lastHw > firstHw) {
+                long hwSeconds = (lastHw - firstHw) / 1_000_000_000L;
+                if (hwSeconds > 0) {
+                    return hwSeconds;
+                }
+            }
+        }
+        return Math.max(0, Duration.between(start, end).toSeconds());
     }
 
     /**
@@ -787,105 +1182,7 @@ public class NistValidationService {
         if (latestRunId == null) {
             return null;
         }
-
-        List<NistTestResult> tests = NistTestResult.findByTestSuiteRun(latestRunId);
-        if (tests.isEmpty()) {
-            return null;
-        }
-
-        // Group test results by test name and aggregate across chunks
-        Map<String, List<NistTestResult>> testsByName =
-                tests.stream().collect(Collectors.groupingBy(t -> t.testName));
-
-        List<NISTTestResultDTO> testDTOs =
-                testsByName.entrySet().stream()
-                        .map(
-                                entry -> {
-                                    String testName = entry.getKey();
-                                    List<NistTestResult> chunks = entry.getValue();
-
-                                    // Aggregate: FAIL if any chunk fails
-                                    boolean overallPassed =
-                                            chunks.stream()
-                                                    .allMatch(t -> Boolean.TRUE.equals(t.passed));
-
-                                    // Take minimum p-value (most conservative)
-                                    double minPValue =
-                                            chunks.stream()
-                                                    .mapToDouble(
-                                                            t -> t.pValue != null ? t.pValue : 0.0)
-                                                    .min()
-                                                    .orElse(0.0);
-
-                                    // Use latest execution time
-                                    Instant latestExecutedAt =
-                                            chunks.stream()
-                                                    .map(t -> t.executedAt)
-                                                    .max(Instant::compareTo)
-                                                    .orElse(Instant.now());
-
-                                    // Determine status
-                                    String status = overallPassed ? "PASS" : "FAIL";
-
-                                    // Take details from first chunk (or aggregate if needed)
-                                    String details = chunks.get(0).details;
-
-                                    return new NISTTestResultDTO(
-                                            testName,
-                                            overallPassed,
-                                            minPValue,
-                                            status,
-                                            latestExecutedAt,
-                                            details);
-                                })
-                        .sorted(Comparator.comparing(NISTTestResultDTO::testName))
-                        .toList();
-
-        // testDTOs now contains aggregated results (15 tests, independent of chunk count).
-        int passedCount =
-                (int) testDTOs.stream().filter(dto -> Boolean.TRUE.equals(dto.passed())).count();
-        int failedCount = testDTOs.size() - passedCount;
-        double passRate = testDTOs.isEmpty() ? 0.0 : (double) passedCount / testDTOs.size();
-
-        // Calculate total bits tested robustly, independent of firstTest metadata
-        long datasetSizeBits = 0L;
-        Set<Integer> seenChunks = new HashSet<>();
-
-        for (NistTestResult test : tests) {
-            Integer chunkIdx = test.chunkIndex;
-            if (chunkIdx != null && !seenChunks.contains(chunkIdx)) {
-                seenChunks.add(chunkIdx);
-                datasetSizeBits += test.bitsTested != null ? test.bitsTested : 0L;
-            }
-        }
-
-        // Fallback for legacy data without chunk metadata
-        if (datasetSizeBits == 0L && !tests.isEmpty()) {
-            NistTestResult firstTest = tests.get(0);
-            datasetSizeBits = firstTest.dataSampleSize != null ? firstTest.dataSampleSize : 0L;
-        }
-
-        // Use latest execution time from aggregated tests
-        Instant suiteExecutedAt =
-                testDTOs.stream()
-                        .map(NISTTestResultDTO::executedAt)
-                        .max(Instant::compareTo)
-                        .orElse(Instant.now());
-
-        NistTestResult firstTest = tests.getFirst();
-        return new NISTSuiteResultDTO(
-                testDTOs, // Aggregated tests (15, independent of chunk count)
-                testDTOs.size(), // Now correctly 15, not 30
-                passedCount, // Aggregated pass count
-                failedCount, // Aggregated fail count
-                passRate, // Correct pass rate
-                true, // Assuming uniformity check passed
-                suiteExecutedAt, // Latest execution time from aggregated tests
-                datasetSizeBits, // Robustly calculated from unique chunks
-                new TimeWindowDTO(
-                        firstTest.windowStart,
-                        firstTest.windowEnd,
-                        Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours()));
+        return getValidationResultByRunId(latestRunId);
     }
 
     /**
@@ -912,6 +1209,10 @@ public class NistValidationService {
 
     void setSp80090bMaxBytesForTesting(int maxBytes) {
         this.sp80090bMaxBytes = maxBytes;
+    }
+
+    void setSp80090bSampleIntervalSecondsForTesting(int seconds) {
+        this.sp80090bSampleIntervalSeconds = seconds;
     }
 
     private void recordFailureMetric() {
@@ -1107,9 +1408,9 @@ public class NistValidationService {
 
     /**
      * Async worker for SP 800-22 validation job.
-     * <p>
-     * Runs in background thread, updates job progress after each chunk,
-     * and marks job as COMPLETED or FAILED when done.
+     *
+     * <p>Uses single-sequence mode when data fits within MaxBits, or proper NIST SP 800-22 §4.2.1
+     * multi-sequence analysis with chi-square aggregation for larger bitstreams.
      *
      * @param jobId       Job ID to process
      * @param bearerToken Bearer token for gRPC calls
@@ -1123,19 +1424,16 @@ public class NistValidationService {
         }
 
         try {
-            // Mark as RUNNING
             job.status = JobStatus.RUNNING;
             job.startedAt = Instant.now();
             job.persist();
             LOG.infof("SP 800-22 job %s started", jobId);
 
-            // Load entropy data
             List<EntropyData> events = EntropyData.findInTimeWindow(job.windowStart, job.windowEnd);
             if (events.isEmpty()) {
                 throw new NistException("No entropy data in specified window");
             }
 
-            // Extract bitstream and split into chunks
             byte[] bitstream = extractWhitenedBits(events);
             long bitstreamLengthBits = bitstream.length * 8L;
             long minBitsRequired = getEffectiveSp80022MinBits();
@@ -1147,72 +1445,141 @@ public class NistValidationService {
                                 minBitsRequired, bitstreamLengthBits));
             }
 
-            validateSp80022ChunkConfig();
-            List<byte[]> chunks = splitSp80022Chunks(bitstream);
-
-            job.totalChunks = chunks.size();
-            job.persist();
-
-            LOG.infof(
-                    "SP 800-22 job %s: totalBytes=%d totalBits=%d chunks=%d",
-                    jobId, bitstream.length, bitstreamLengthBits, chunks.size());
-
-            // Generate test suite run ID
+            int maxBytes = getEffectiveSp80022MaxBytes();
             UUID testSuiteRunId = UUID.randomUUID();
             job.testSuiteRunId = testSuiteRunId;
-            job.persist();
-
             String batchId = events.getFirst().batchId;
-            List<NistTestResult> entitiesToPersist = new ArrayList<>();
 
-            // Process each chunk with progress updates
-            for (int i = 0; i < chunks.size(); i++) {
-                byte[] chunk = chunks.get(i);
-                long chunkBits = chunk.length * 8L;
+            boolean singleSequence = bitstream.length <= maxBytes;
 
-                LOG.infof(
-                        "SP 800-22 job %s: processing chunk %d/%d (%d bytes)",
-                        jobId, i + 1, chunks.size(), chunk.length);
-
-                // Run NIST tests for this chunk
-                Sp80022TestResponse grpcResult = runSp80022Tests(chunk, bearerToken);
-
-                // Collect results (reuse existing logic)
-                collectSp80022ChunkResults(
-                        grpcResult,
-                        testSuiteRunId,
-                        batchId,
-                        job.windowStart,
-                        job.windowEnd,
-                        i + 1,
-                        chunks.size(),
-                        chunkBits,
-                        entitiesToPersist,
-                        new ArrayList<>()); // Don't need DTOs here
-
-                // Update progress
-                job.currentChunk = i + 1;
-                job.progressPercent = (int) ((i + 1) * 100.0 / chunks.size());
+            if (singleSequence) {
+                // Single-sequence mode
+                job.totalChunks = 1;
                 job.persist();
 
                 LOG.infof(
-                        "SP 800-22 job %s: chunk %d/%d complete (%d%%)",
-                        jobId, i + 1, chunks.size(), job.progressPercent);
+                        "SP 800-22 job %s: single-sequence mode, bytes=%d bits=%d",
+                        jobId, bitstream.length, bitstreamLengthBits);
+
+                Sp80022TestResponse grpcResult = runSp80022Tests(bitstream, bearerToken);
+                List<NistTestResult> entitiesToPersist = new ArrayList<>();
+
+                for (Sp80022TestResult test : grpcResult.getResultsList()) {
+                    NistTestResult entity =
+                            new NistTestResult(
+                                    testSuiteRunId,
+                                    test.getName(),
+                                    test.getPassed(),
+                                    test.getPValue(),
+                                    job.windowStart,
+                                    job.windowEnd);
+                    entity.dataSampleSize = bitstreamLengthBits;
+                    entity.bitsTested = bitstreamLengthBits;
+                    entity.batchId = batchId;
+                    entity.chunkIndex = 1;
+                    entity.chunkCount = 1;
+                    entity.aggregationMethod = "SINGLE_SEQUENCE";
+                    entity.details =
+                            test.hasWarning()
+                                    ? ensureJsonDocument(test.getWarning(), "warning")
+                                    : null;
+                    entitiesToPersist.add(entity);
+                }
+
+                persistNistTestResultsBatch(entitiesToPersist);
+                job.currentChunk = 1;
+                job.progressPercent = 100;
+                job.persist();
+            } else {
+                // Multi-sequence mode
+                int minBytesPerSequence = (int) Math.ceil(getEffectiveSp80022MinBits() / 8.0);
+                int minSequences = 55;
+                int maxSequencesBySize = bitstream.length / minBytesPerSequence;
+
+                if (maxSequencesBySize < minSequences) {
+                    throw new NistException(
+                            String.format(
+                                    "Multi-sequence mode requires >= %d sequences of >= %d bytes"
+                                            + " each. Bitstream (%d bytes) can produce at most %d"
+                                            + " sequences.",
+                                    minSequences,
+                                    minBytesPerSequence,
+                                    bitstream.length,
+                                    maxSequencesBySize));
+                }
+
+                int sequenceCount =
+                        Math.max(minSequences, (bitstream.length + maxBytes - 1) / maxBytes);
+                int sequenceLength = bitstream.length / sequenceCount;
+
+                job.totalChunks = sequenceCount;
+                job.persist();
+
+                LOG.infof(
+                        "SP 800-22 job %s: multi-sequence mode, bytes=%d sequences=%d"
+                                + " seqLength=%d",
+                        jobId, bitstream.length, sequenceCount, sequenceLength);
+
+                List<NistTestResult> entitiesToPersist = new ArrayList<>();
+
+                // Truncate to exact multiple of sequenceLength (§4.2.1)
+                int usableLen = sequenceCount * sequenceLength;
+                byte[] trimmed = Arrays.copyOf(bitstream, usableLen);
+
+                for (int i = 0; i < sequenceCount; i++) {
+                    int seqStart = i * sequenceLength;
+                    int seqEnd = seqStart + sequenceLength;
+                    byte[] sequence = Arrays.copyOfRange(trimmed, seqStart, seqEnd);
+                    long seqBits = sequence.length * 8L;
+
+                    Sp80022TestResponse grpcResult = runSp80022Tests(sequence, bearerToken);
+
+                    for (Sp80022TestResult test : grpcResult.getResultsList()) {
+                        NistTestResult entity =
+                                new NistTestResult(
+                                        testSuiteRunId,
+                                        test.getName(),
+                                        test.getPassed(),
+                                        test.getPValue(),
+                                        job.windowStart,
+                                        job.windowEnd);
+                        entity.dataSampleSize = seqBits;
+                        entity.bitsTested = seqBits;
+                        entity.batchId = batchId;
+                        entity.chunkIndex = i + 1;
+                        entity.chunkCount = sequenceCount;
+                        entity.aggregationMethod = "MULTI_SEQUENCE_CHI2";
+                        entity.details =
+                                test.hasWarning()
+                                        ? ensureJsonDocument(test.getWarning(), "warning")
+                                        : null;
+                        entitiesToPersist.add(entity);
+                    }
+
+                    transactionalSelf().updateJobProgress(
+                            jobId,
+                            i + 1,
+                            (int) ((i + 1) * 100.0 / sequenceCount)
+                    );
+
+                    LOG.infof(
+                            "SP 800-22 job %s: sequence %d/%d complete (%d%%)",
+                            jobId, i + 1, sequenceCount, job.progressPercent);
+                }
+
+                persistNistTestResultsBatch(entitiesToPersist);
             }
 
-            // Persist all test results in batch
-            persistNistTestResultsBatch(entitiesToPersist);
-
-            // Mark job as COMPLETED
             job.status = JobStatus.COMPLETED;
             job.completedAt = Instant.now();
             job.progressPercent = 100;
             job.persist();
 
             LOG.infof(
-                    "SP 800-22 job %s completed successfully: runId=%s duration=%ds",
+                    "SP 800-22 job %s completed successfully: runId=%s mode=%s duration=%ds",
                     jobId,
                     testSuiteRunId,
+                    singleSequence ? "SINGLE_SEQUENCE" : "MULTI_SEQUENCE_CHI2",
                     Duration.between(job.startedAt, job.completedAt).getSeconds());
 
         } catch (Exception e) {
@@ -1237,10 +1604,10 @@ public class NistValidationService {
     /**
      * Async worker for an SP 800-90B validation job.
      *
-     * <p>Processes all chunks sequentially, persists per-chunk rows, then writes a single
-     * run-summary row whose minEntropy equals the worst chunk and whose passed
-     * flag is the conjunction of all chunks. Estimator rows are sourced from the
-     * worst-minEntropy chunk via {@link #writeEstimatorsForRun}.
+     * <p>Performs multi-point sampling: draws N independent 1M-byte samples at evenly-spaced
+     * positions across the time window. Each sample is a NIST-valid SP 800-90B assessment.
+     * The run-summary row applies conservative product-defined aggregation:
+     * min(min_entropy) and AND(passed).
      *
      * @param jobId       job identifier to process
      * @param bearerToken bearer token for gRPC authentication (may be null)
@@ -1269,97 +1636,126 @@ public class NistValidationService {
                 throw new NistException("No usable entropy bitstream in specified window");
             }
 
-            // Split into chunks (similar to SP 800-22)
-            List<byte[]> chunks = splitSp80090bChunks(bitstream);
-            job.totalChunks = chunks.size();
+            int maxBytes = getEffectiveSp80090bMaxBytes();
+            long windowDurationSeconds =
+                    computeWindowDurationSeconds(events, job.windowStart, job.windowEnd);
+            List<int[]> samplePositions =
+                    compute90BSamplePositions(bitstream.length, maxBytes, windowDurationSeconds);
+            int sampleCount = samplePositions.size();
+
+            job.totalChunks = sampleCount;
             job.persist();
 
             LOG.infof(
-                    "SP 800-90B job %s: totalBytes=%d chunks=%d",
-                    jobId, bitstream.length, chunks.size());
+                    "SP 800-90B job %s: totalBytes=%d samples=%d sampleSize=%d windowDuration=%ds",
+                    jobId, bitstream.length, sampleCount, maxBytes, windowDurationSeconds);
 
             UUID assessmentRunId = UUID.randomUUID();
             job.assessmentRunId = assessmentRunId;
             job.persist();
 
             String batchId = events.getFirst().batchId;
+            int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
 
-            // Canonical run aggregation: use the minimum minEntropy
-            // across all chunks and requires every chunk to pass.
             double worstMinEntropy = Double.MAX_VALUE;
             Sp80090bAssessmentResponse worstResponse = null;
-            int worstChunkIndex = -1;
+            int worstSampleIndex = -1;
             boolean allPassed = true;
             long totalBits = 0L;
 
-            for (int i = 0; i < chunks.size(); i++) {
-                byte[] chunk = chunks.get(i);
+            for (int i = 0; i < sampleCount; i++) {
+                int[] pos = samplePositions.get(i);
+                int sampleStart = pos[0];
+                int sampleEnd = pos[1];
+                byte[] sample = Arrays.copyOfRange(bitstream, sampleStart, sampleEnd);
+
+                // Resolve hwTimestampNs for first and last events contributing to this sample
+                int firstEventIndex = sampleStart / bytesPerEvent;
+                int lastEventIndex = Math.max(firstEventIndex, (sampleEnd - 1) / bytesPerEvent);
+                Instant firstEventTs = resolveEventTimestamp(events, firstEventIndex);
+                Instant lastEventTs = resolveEventTimestamp(events, lastEventIndex);
 
                 LOG.infof(
-                        "SP 800-90B job %s: processing chunk %d/%d (%d bytes)",
-                        jobId, i + 1, chunks.size(), chunk.length);
+                        "SP 800-90B job %s: processing sample %d/%d (%d bytes, range [%d,%d))",
+                        jobId, i + 1, sampleCount, sample.length, sampleStart, sampleEnd);
 
                 Sp80090bOutcome outcome =
-                        assess90B(chunk, batchId, job.windowStart, job.windowEnd,
-                                bearerToken, assessmentRunId);
+                        assess90B(
+                                sample,
+                                batchId,
+                                job.windowStart,
+                                job.windowEnd,
+                                bearerToken,
+                                assessmentRunId);
 
-                // Update the persisted entity with chunk metadata
                 Nist90BResult entity = outcome.entity();
-                entity.chunkIndex = i;
-                entity.chunkCount = chunks.size();
-                // Per-chunk row: isRunSummary remains false (default)
-                entity.persist();
+                entity.sampleIndex = i + 1;
+                entity.sampleCount = sampleCount;
+                entity.sampleByteOffsetStart = (long) sampleStart;
+                entity.sampleByteOffsetEnd = (long) sampleEnd;
+                entity.sampleFirstEventTimestamp = firstEventTs;
+                entity.sampleLastEventTimestamp = lastEventTs;
+                entity.assessmentScope = "NIST_SINGLE_SAMPLE";
+                long actualSampleBytes = sampleEnd - sampleStart;
+                entity.sampleSizeMeetsNistMinimum =
+                        actualSampleBytes >= getEffectiveSp80090bMaxBytes();
+                em.persist(entity);
 
-                // Track the chunk with the lowest minEntropy; strict < ensures the first chunk wins ties
                 if (outcome.response().getMinEntropy() < worstMinEntropy) {
                     worstMinEntropy = outcome.response().getMinEntropy();
                     worstResponse = outcome.response();
-                    worstChunkIndex = i;
+                    worstSampleIndex = i;
                 }
 
-                allPassed &= outcome.response().getPassed(); // Run passes only if all chunks pass
+                allPassed &= outcome.response().getPassed();
                 totalBits += entity.bitsTested != null ? entity.bitsTested : 0L;
 
-                // Update progress
-                job.currentChunk = i + 1;
-                job.progressPercent = (int) ((i + 1) * 100.0 / chunks.size());
-                job.persist();
+                transactionalSelf().updateJobProgress(
+                        jobId,
+                        i + 1,
+                        (int) ((i + 1) * 100.0 / sampleCount)
+                );
 
                 LOG.infof(
-                        "SP 800-90B job %s: chunk %d/%d complete (%d%%) minEntropy=%.6f",
-                        jobId, i + 1, chunks.size(), job.progressPercent, entity.minEntropy);
+                        "SP 800-90B job %s: sample %d/%d complete (%d%%) minEntropy=%.6f",
+                        jobId, i + 1, sampleCount, job.progressPercent, entity.minEntropy);
             }
 
-            // Invariant: the run-summary row (isRunSummary=true) is written only after
-            // every chunk has been assessed and persisted. Its absence indicates an
-            // incomplete run; partial per-chunk rows may exist but are not canonical.
+            // Run-summary row: product-defined conservative aggregation
             String summaryDetails;
             try {
-                summaryDetails = JSON_MAPPER.createObjectNode()
-                        .put("model", "C")
-                        .put("chunks", chunks.size())
-                        .put("rule", "min_entropy=min,passed=all")
-                        .put("estimator_source_chunk", worstChunkIndex)
-                        .toString();
+                summaryDetails =
+                        JSON_MAPPER
+                                .createObjectNode()
+                                .put("samplingStrategy", "evenly_spaced")
+                                .put("samples", sampleCount)
+                                .put("sampleSizeBytes", maxBytes)
+                                .put("rule", "min_entropy=min(all),passed=AND(all)")
+                                .put("estimatorSourceSample", worstSampleIndex)
+                                .put(
+                                        "note",
+                                        "Product-defined conservative summary, not NIST-specified")
+                                .toString();
             } catch (Exception e) {
                 summaryDetails = null;
             }
 
-            Nist90BResult summary = new Nist90BResult(
-                    batchId,
-                    worstMinEntropy,
-                    allPassed,
-                    summaryDetails,
-                    totalBits,
-                    job.windowStart,
-                    job.windowEnd);
+            Nist90BResult summary =
+                    new Nist90BResult(
+                            batchId,
+                            worstMinEntropy,
+                            allPassed,
+                            summaryDetails,
+                            totalBits,
+                            job.windowStart,
+                            job.windowEnd);
             summary.assessmentRunId = assessmentRunId;
-            summary.chunkCount = chunks.size();
-            summary.chunkIndex = null;
+            summary.sampleCount = sampleCount;
             summary.isRunSummary = true;
+            summary.assessmentScope = "PRODUCT_WINDOW_SUMMARY";
             em.persist(summary);
 
-            writeEstimatorsForRun(assessmentRunId, worstResponse, worstChunkIndex);
+            writeEstimatorsForRun(assessmentRunId, worstResponse, worstSampleIndex);
 
             job.status = JobStatus.COMPLETED;
             job.completedAt = Instant.now();
@@ -1367,9 +1763,10 @@ public class NistValidationService {
             job.persist();
 
             LOG.infof(
-                    "SP 800-90B job %s completed successfully: runId=%s duration=%ds",
+                    "SP 800-90B job %s completed successfully: runId=%s samples=%d duration=%ds",
                     jobId,
                     assessmentRunId,
+                    sampleCount,
                     Duration.between(job.startedAt, job.completedAt).getSeconds());
 
         } catch (Exception e) {
@@ -1431,8 +1828,98 @@ public class NistValidationService {
         }
 
         NistTestResult firstTest = tests.getFirst();
-        List<NISTTestResultDTO> testDTOs = tests.stream().map(NistTestResult::toDTO).toList();
+        String validationMode =
+                firstTest.aggregationMethod != null
+                        ? firstTest.aggregationMethod
+                        : "SINGLE_SEQUENCE";
 
+        // For multi-sequence runs, aggregate via chi-square per test name
+        if ("MULTI_SEQUENCE_CHI2".equals(validationMode)) {
+            Map<String, List<Double>> pValuesByTest = new LinkedHashMap<>();
+            Map<String, Integer> passCountByTest = new LinkedHashMap<>();
+            long totalBitsTested = 0L;
+            Set<Integer> seenChunks = new HashSet<>();
+
+            for (NistTestResult test : tests) {
+                pValuesByTest
+                        .computeIfAbsent(test.testName, k -> new ArrayList<>())
+                        .add(test.pValue != null ? test.pValue : 0.0);
+                if (test.passed) {
+                    passCountByTest.merge(test.testName, 1, Integer::sum);
+                } else {
+                    passCountByTest.putIfAbsent(test.testName, 0);
+                }
+                if (test.chunkIndex != null && !seenChunks.contains(test.chunkIndex)) {
+                    seenChunks.add(test.chunkIndex);
+                    totalBitsTested += test.bitsTested != null ? test.bitsTested : 0L;
+                }
+            }
+
+            int sequenceCount = seenChunks.size();
+            double alpha = 0.01;
+            double proportionThreshold =
+                    1.0 - alpha - 3.0 * Math.sqrt(alpha * (1.0 - alpha) / sequenceCount);
+
+            List<NISTTestResultDTO> aggregatedDTOs = new ArrayList<>();
+            int passedCount = 0;
+            for (Map.Entry<String, List<Double>> entry : pValuesByTest.entrySet()) {
+                String testName = entry.getKey();
+                double chi2PValue = computeChiSquareUniformity(entry.getValue());
+                boolean chi2Passed = chi2PValue >= 0.0001;
+
+                int passes = passCountByTest.getOrDefault(testName, 0);
+                double proportion = (double) passes / sequenceCount;
+                boolean proportionPassed = proportion >= proportionThreshold;
+
+                boolean testPassed = chi2Passed && proportionPassed;
+                if (testPassed) passedCount++;
+
+                String details = null;
+                if (!proportionPassed) {
+                    details =
+                            ensureJsonDocument(
+                                    String.format(
+                                            "passRatio=%.4f threshold=%.4f chi2PValue=%.6f",
+                                            proportion, proportionThreshold, chi2PValue),
+                                    "proportion_fail");
+                }
+
+                aggregatedDTOs.add(
+                        new NISTTestResultDTO(
+                                testName,
+                                testPassed,
+                                chi2PValue,
+                                testPassed ? "PASS" : "FAIL",
+                                firstTest.executedAt,
+                                details,
+                                "MULTI_SEQUENCE_CHI2",
+                                null,
+                                null,
+                                null));
+            }
+
+            int totalTests = aggregatedDTOs.size();
+            int failedCount = totalTests - passedCount;
+            double passRate = totalTests > 0 ? (double) passedCount / totalTests : 0.0;
+
+            return new NISTSuiteResultDTO(
+                    aggregatedDTOs,
+                    totalTests,
+                    passedCount,
+                    failedCount,
+                    passRate,
+                    failedCount == 0,
+                    firstTest.executedAt,
+                    totalBitsTested,
+                    new TimeWindowDTO(
+                            firstTest.windowStart,
+                            firstTest.windowEnd,
+                            Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours()),
+                    validationMode);
+        }
+
+        // Single-sequence mode: return results directly
+        List<NISTTestResultDTO> testDTOs = tests.stream().map(NistTestResult::toDTO).toList();
         int totalTests = tests.size();
         int passedCount = (int) tests.stream().filter(t -> t.passed).count();
         int failedCount = totalTests - passedCount;
@@ -1451,7 +1938,8 @@ public class NistValidationService {
                 new TimeWindowDTO(
                         firstTest.windowStart,
                         firstTest.windowEnd,
-                        Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours()));
+                        Duration.between(firstTest.windowStart, firstTest.windowEnd).toHours()),
+                validationMode);
     }
 
     /**
@@ -1509,14 +1997,29 @@ public class NistValidationService {
 
         // Fetch the canonical run-summary row (isRunSummary=true). Absent for
         // incomplete runs and runs that predate the run-summary schema migration.
-        Nist90BResult summary = Nist90BResult
-                .find("assessmentRunId = ?1 AND isRunSummary = true", job.assessmentRunId)
-                .firstResult();
+        Nist90BResult summary =
+                Nist90BResult.find(
+                                "assessmentRunId = ?1 AND isRunSummary = true", job.assessmentRunId)
+                        .firstResult();
         if (summary == null) {
             throw new ValidationException(
-                    "No run-summary row found for assessment run of job " + jobId
-                            + "; the run may predate the run-summary schema migration or may still be in progress");
+                    "No run-summary row found for assessment run of job "
+                            + jobId
+                            + "; the run may predate the run-summary schema migration or may still"
+                            + " be in progress");
         }
         return summary.toDTO();
+    }
+
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void updateJobProgress(UUID jobId, int currentChunk, int progressPercent) {
+        NistValidationJob job = NistValidationJob.findById(jobId);
+
+        if (job != null) {
+            job.currentChunk = currentChunk;
+            job.progressPercent = progressPercent;
+            job.persist();
+        }
     }
 }

@@ -35,7 +35,7 @@ public class Nist90BResultQueryParamsDTO {
     /**
      * When true (default), return only the canonical run-summary rows (isRunSummary = true),
      * ordered by executedAt DESC — one row per completed run.
-     * When false, return only per-chunk rows (isRunSummary = false), ordered by chunkIndex ASC.
+     * When false, return only per-sample rows (isRunSummary = false), ordered by sampleIndex ASC.
      */
     @QueryParam("summaryOnly")
     public boolean summaryOnly = true;
@@ -44,7 +44,7 @@ public class Nist90BResultQueryParamsDTO {
      * Whitelisted sortable fields (Security Boundary).
      */
     private static final Set<String> SORTABLE_FIELDS =
-            Set.of("id", "executedAt", "passed", "minEntropy", "chunkIndex");
+            Set.of("id", "executedAt", "passed", "minEntropy", "sampleIndex");
 
     /**
      * Build a parameterized Panache query with filters and sorting.
@@ -57,7 +57,7 @@ public class Nist90BResultQueryParamsDTO {
         Map<String, Object> params = new HashMap<>();
 
         // summaryOnly=true (default): canonical run-summary rows only
-        // summaryOnly=false: per-chunk rows only (for forensic/detail views)
+        // summaryOnly=false: per-sample rows only (for forensic/detail views)
         queryStr.append(" AND isRunSummary = :isRunSummary");
         params.put("isRunSummary", summaryOnly);
 
@@ -88,7 +88,7 @@ public class Nist90BResultQueryParamsDTO {
         } else if (summaryOnly) {
             queryStr.append(" ORDER BY executedAt DESC");
         } else {
-            queryStr.append(" ORDER BY chunkIndex ASC");
+            queryStr.append(" ORDER BY sampleIndex ASC");
         }
 
         return Nist90BResult.find(queryStr.toString(), params);

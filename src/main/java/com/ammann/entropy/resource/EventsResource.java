@@ -241,7 +241,8 @@ public class EventsResource {
         TimeWindow window = parseTimeWindow(from, to);
 
         long count =
-                EntropyData.count("serverReceived BETWEEN ?1 AND ?2", window.start, window.end);
+                EntropyData.count(
+                        "serverReceived >= ?1 AND serverReceived < ?2", window.start, window.end);
         long durationSeconds = Duration.between(window.start, window.end).toSeconds();
 
         var response = new EventCountResponseDTO(count, window.start, window.end, durationSeconds);
@@ -409,7 +410,8 @@ public class EventsResource {
 
         TimeWindow window = parseTimeWindow(from, to);
         long count =
-                EntropyData.count("serverReceived BETWEEN ?1 AND ?2", window.start, window.end);
+                EntropyData.count(
+                        "serverReceived >= ?1 AND serverReceived < ?2", window.start, window.end);
 
         var response = EventRateResponseDTO.create(count, window.start, window.end, expectedRateHz);
 

@@ -17,7 +17,16 @@ public record NISTTestResultDTO(
                         enumeration = {"PASS", "FAIL", "PENDING", "ERROR"})
                 String status,
         @Schema(description = "Timestamp when test was executed") Instant executedAt,
-        @Schema(description = "Additional test-specific details") String details) {
+        @Schema(description = "Additional test-specific details") String details,
+        @Schema(
+                        description =
+                                "How this result was produced: SINGLE_SEQUENCE or"
+                                        + " MULTI_SEQUENCE_CHI2")
+                String aggregationMethod,
+        @Schema(description = "1-based chunk/sequence index within a multi-sequence run")
+                Integer chunkIndex,
+        @Schema(description = "Total number of chunks/sequences in the run") Integer chunkCount,
+        @Schema(description = "Number of bits tested in this sequence") Long bitsTested) {
     /**
      * Converts entity to DTO.
      */
@@ -30,13 +39,32 @@ public record NISTTestResultDTO(
      */
     public static NISTTestResultDTO create(String testName, boolean passed, double pValue) {
         return new NISTTestResultDTO(
-                testName, passed, pValue, passed ? "PASS" : "FAIL", Instant.now(), null);
+                testName,
+                passed,
+                pValue,
+                passed ? "PASS" : "FAIL",
+                Instant.now(),
+                null,
+                null,
+                null,
+                null,
+                null);
     }
 
     /**
      * Creates a test result with error status.
      */
     public static NISTTestResultDTO error(String testName, String errorMessage) {
-        return new NISTTestResultDTO(testName, false, null, "ERROR", Instant.now(), errorMessage);
+        return new NISTTestResultDTO(
+                testName,
+                false,
+                null,
+                "ERROR",
+                Instant.now(),
+                errorMessage,
+                null,
+                null,
+                null,
+                null);
     }
 }

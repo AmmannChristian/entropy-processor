@@ -34,7 +34,15 @@ class Nist90BResultDTOTest {
                             1000000L,
                             window,
                             assessmentRunId,
-                            true); // isRunSummary
+                            true, // isRunSummary
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto.minEntropy()).isEqualTo(7.5);
             assertThat(dto.passed()).isTrue();
@@ -62,7 +70,15 @@ class Nist90BResultDTOTest {
                             500000L,
                             window,
                             assessmentRunId,
-                            false);
+                            false,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto.passed()).isFalse();
             assertThat(dto.minEntropy()).isEqualTo(3.5);
@@ -78,7 +94,22 @@ class Nist90BResultDTOTest {
 
             NIST90BResultDTO dto =
                     new NIST90BResultDTO(
-                            7.5, true, null, executed, 1000000L, window, assessmentRunId, true);
+                            7.5,
+                            true,
+                            null,
+                            executed,
+                            1000000L,
+                            window,
+                            assessmentRunId,
+                            true,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto.assessmentDetails()).isNull();
             assertThat(dto.minEntropy()).isEqualTo(7.5);
@@ -101,10 +132,40 @@ class Nist90BResultDTOTest {
 
             NIST90BResultDTO dto1 =
                     new NIST90BResultDTO(
-                            7.5, true, "details", executed, 1000000L, window, assessmentRunId, true);
+                            7.5,
+                            true,
+                            "details",
+                            executed,
+                            1000000L,
+                            window,
+                            assessmentRunId,
+                            true,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
             NIST90BResultDTO dto2 =
                     new NIST90BResultDTO(
-                            7.5, true, "details", executed, 1000000L, window, assessmentRunId, true);
+                            7.5,
+                            true,
+                            "details",
+                            executed,
+                            1000000L,
+                            window,
+                            assessmentRunId,
+                            true,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto1).isEqualTo(dto2);
             assertThat(dto1.hashCode()).isEqualTo(dto2.hashCode());
@@ -122,10 +183,40 @@ class Nist90BResultDTOTest {
 
             NIST90BResultDTO dto1 =
                     new NIST90BResultDTO(
-                            7.5, true, null, executed, 1000000L, window, assessmentRunId, false);
+                            7.5,
+                            true,
+                            null,
+                            executed,
+                            1000000L,
+                            window,
+                            assessmentRunId,
+                            false,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
             NIST90BResultDTO dto2 =
                     new NIST90BResultDTO(
-                            7.5, false, null, executed, 1000000L, window, assessmentRunId, false);
+                            7.5,
+                            false,
+                            null,
+                            executed,
+                            1000000L,
+                            window,
+                            assessmentRunId,
+                            false,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto1).isNotEqualTo(dto2);
         }
@@ -143,7 +234,22 @@ class Nist90BResultDTOTest {
 
             NIST90BResultDTO dto =
                     new NIST90BResultDTO(
-                            6.5, true, null, Instant.now(), 1000000L, window, assessmentRunId, true);
+                            6.5,
+                            true,
+                            null,
+                            Instant.now(),
+                            1000000L,
+                            window,
+                            assessmentRunId,
+                            true,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto.minEntropy()).isEqualTo(6.5);
         }
@@ -156,7 +262,22 @@ class Nist90BResultDTOTest {
 
             NIST90BResultDTO dto =
                     new NIST90BResultDTO(
-                            0.0, false, "all zeros", Instant.now(), 1000L, window, assessmentRunId, false);
+                            0.0,
+                            false,
+                            "all zeros",
+                            Instant.now(),
+                            1000L,
+                            window,
+                            assessmentRunId,
+                            false,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null);
 
             assertThat(dto.minEntropy()).isZero();
         }

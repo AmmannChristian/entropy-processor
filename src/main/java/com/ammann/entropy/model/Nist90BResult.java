@@ -96,6 +96,45 @@ public class Nist90BResult extends PanacheEntity {
     @Column(name = "is_run_summary", nullable = false)
     public boolean isRunSummary = false;
 
+    /** 1-based index of this sample within the window assessment. Null for legacy rows. */
+    @Column(name = "sample_index")
+    public Integer sampleIndex;
+
+    /** Total number of samples in this window assessment. */
+    @Column(name = "sample_count")
+    public Integer sampleCount;
+
+    /** Start byte offset (inclusive) within the assembled bitstream for this sample. */
+    @Column(name = "sample_byte_offset_start")
+    public Long sampleByteOffsetStart;
+
+    /** End byte offset (exclusive) within the assembled bitstream for this sample. */
+    @Column(name = "sample_byte_offset_end")
+    public Long sampleByteOffsetEnd;
+
+    /** hwTimestampNs of the first entropy event contributing to this sample. */
+    @Column(name = "sample_first_event_timestamp")
+    public Instant sampleFirstEventTimestamp;
+
+    /** hwTimestampNs of the last entropy event contributing to this sample. */
+    @Column(name = "sample_last_event_timestamp")
+    public Instant sampleLastEventTimestamp;
+
+    /**
+     * Assessment scope discriminator.
+     * NIST_SINGLE_SAMPLE: individual NIST-valid SP 800-90B assessment.
+     * PRODUCT_WINDOW_SUMMARY: conservative aggregation across N independent NIST assessments.
+     */
+    @Column(name = "assessment_scope", length = 30)
+    public String assessmentScope = "NIST_SINGLE_SAMPLE";
+
+    /**
+     * Whether the actual sample size meets the NIST SP 800-90B §3.1.2 minimum
+     * recommendation of 1,000,000 bytes (for 8-bit symbols). Null for legacy rows.
+     */
+    @Column(name = "sample_size_meets_nist_minimum")
+    public Boolean sampleSizeMeetsNistMinimum;
+
     public Nist90BResult() {}
 
     public Nist90BResult(
@@ -133,6 +172,14 @@ public class Nist90BResult extends PanacheEntity {
                 bitsTested != null ? bitsTested : 0L,
                 window,
                 assessmentRunId,
-                isRunSummary);
+                isRunSummary,
+                sampleIndex,
+                sampleCount,
+                sampleByteOffsetStart,
+                sampleByteOffsetEnd,
+                sampleFirstEventTimestamp,
+                sampleLastEventTimestamp,
+                assessmentScope,
+                sampleSizeMeetsNistMinimum);
     }
 }

@@ -148,7 +148,7 @@ public class DataQualityReport extends PanacheEntity {
      */
     public static List<DataQualityReport> findInRange(Instant start, Instant end) {
         return find(
-                        "reportTimestamp >= ?1 AND reportTimestamp <= ?2 ORDER BY reportTimestamp"
+                        "reportTimestamp >= ?1 AND reportTimestamp < ?2 ORDER BY reportTimestamp"
                                 + " DESC",
                         start,
                         end)

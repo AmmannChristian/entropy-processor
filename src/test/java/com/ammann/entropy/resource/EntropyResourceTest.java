@@ -399,7 +399,24 @@ class EntropyResourceTest {
     void get90bValidationJobResult_found_returns200() {
         EntropyResource resource = buildResource();
         UUID jobId = UUID.randomUUID();
-        NIST90BResultDTO dto = new NIST90BResultDTO(7.5, true, "OK", Instant.now(), 0L, null, null, true);
+        NIST90BResultDTO dto =
+                new NIST90BResultDTO(
+                        7.5,
+                        true,
+                        "OK",
+                        Instant.now(),
+                        0L,
+                        null,
+                        null,
+                        true,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null);
         when(resource.nistValidationService.getSp80090bJobResult(jobId)).thenReturn(dto);
 
         var response = resource.get90BValidationJobResult(jobId);

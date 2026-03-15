@@ -128,7 +128,15 @@ class NistValidationServiceHourlyTest {
                 1024L,
                 new TimeWindowDTO(start, end, Duration.between(start, end).toHours()),
                 UUID.randomUUID(),
-                true);
+                true,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null);
     }
 
     private static final class TestableNistValidationService extends NistValidationService {

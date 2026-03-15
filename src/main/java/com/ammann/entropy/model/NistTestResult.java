@@ -1,25 +1,27 @@
+/* (C)2026 */
 package com.ammann.entropy.model;
 
 import com.ammann.entropy.dto.NISTTestResultDTO;
 import io.quarkus.hibernate.orm.panache.PanacheEntity;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
-import org.hibernate.annotations.ColumnTransformer;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.hibernate.annotations.ColumnTransformer;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
-@Table(name = "nist_test_results", indexes = {
-        @Index(name = "idx_test_suite_run", columnList = "test_suite_run_id"),
-        @Index(name = "idx_test_suite_run_chunk", columnList = "test_suite_run_id,chunk_index"),
-        @Index(name = "idx_executed_at", columnList = "executed_at"),
-        @Index(name = "idx_passed", columnList = "passed")
-})
+@Table(
+        name = "nist_test_results",
+        indexes = {
+            @Index(name = "idx_test_suite_run", columnList = "test_suite_run_id"),
+            @Index(name = "idx_test_suite_run_chunk", columnList = "test_suite_run_id,chunk_index"),
+            @Index(name = "idx_executed_at", columnList = "executed_at"),
+            @Index(name = "idx_passed", columnList = "passed")
+        })
 public class NistTestResult extends PanacheEntity {
 
     /**
@@ -114,13 +116,25 @@ public class NistTestResult extends PanacheEntity {
     @Column(name = "details", columnDefinition = "jsonb")
     public String details;
 
+    /**
+     * How this result was produced.
+     * SINGLE_SEQUENCE: full bitstream tested as one continuous sequence.
+     * MULTI_SEQUENCE_CHI2: proper NIST SP 800-22 §4.2.1 multi-sequence analysis.
+     */
+    @Column(name = "aggregation_method", length = 30)
+    public String aggregationMethod = "SINGLE_SEQUENCE";
+
     // Constructors
 
-    public NistTestResult() {
-    }
+    public NistTestResult() {}
 
-    public NistTestResult(UUID testSuiteRunId, String testName, boolean passed,
-                          Double pValue, Instant windowStart, Instant windowEnd) {
+    public NistTestResult(
+            UUID testSuiteRunId,
+            String testName,
+            boolean passed,
+            Double pValue,
+            Instant windowStart,
+            Instant windowEnd) {
         this.testSuiteRunId = testSuiteRunId;
         this.testName = testName;
         this.passed = passed;
@@ -148,8 +162,7 @@ public class NistTestResult extends PanacheEntity {
      * @return Number of failed tests
      */
     public static Long countFailures24h() {
-        return count("executedAt > ?1 AND passed = false",
-                Instant.now().minus(Duration.ofDays(1)));
+        return count("executedAt > ?1 AND passed = false", Instant.now().minus(Duration.ofDays(1)));
     }
 
     /**
@@ -184,8 +197,9 @@ public class NistTestResult extends PanacheEntity {
      * @return List of failed test results
      */
     public static List<NistTestResult> findFailures(int days) {
-        return find("executedAt > ?1 AND passed = false ORDER BY executedAt DESC",
-                Instant.now().minus(Duration.ofDays(days)))
+        return find(
+                        "executedAt > ?1 AND passed = false ORDER BY executedAt DESC",
+                        Instant.now().minus(Duration.ofDays(days)))
                 .list();
     }
 
@@ -197,8 +211,7 @@ public class NistTestResult extends PanacheEntity {
      * @return Failure count
      */
     public static Long countTestFailures(String testName, Instant since) {
-        return count("testName = ?1 AND executedAt > ?2 AND passed = false",
-                testName, since);
+        return count("testName = ?1 AND executedAt > ?2 AND passed = false", testName, since);
     }
 
     // Business Methods
@@ -214,13 +227,17 @@ public class NistTestResult extends PanacheEntity {
                 pValue,
                 status,
                 executedAt,
-                details
-        );
+                details,
+                aggregationMethod,
+                chunkIndex,
+                chunkCount,
+                bitsTested);
     }
 
     @Override
     public String toString() {
-        return String.format("NISTTestResult{id=%d, test='%s', passed=%b, pValue=%.4f, runId=%s}",
+        return String.format(
+                "NISTTestResult{id=%d, test='%s', passed=%b, pValue=%.4f, runId=%s}",
                 id, testName, passed, pValue, testSuiteRunId);
     }
 }

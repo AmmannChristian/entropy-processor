@@ -28,11 +28,40 @@ public record NIST90BResultDTO(
         @Schema(
                         description =
                                 "When true, this is the single canonical result for the completed"
-                                        + " assessment run. When false, this is a per-chunk"
-                                        + " row retained for forensic analysis. If no row with"
-                                        + " isRunSummary=true exists for a given assessmentRunId,"
-                                        + " the run is incomplete or predates the run-summary schema migration.")
-                boolean isRunSummary) {
+                                        + " assessment run. When false, this is a per-sample"
+                                        + " row retained for forensic analysis.")
+                boolean isRunSummary,
+        @Schema(description = "1-based index of this sample within the window assessment")
+                Integer sampleIndex,
+        @Schema(description = "Total number of samples in this window assessment")
+                Integer sampleCount,
+        @Schema(description = "Start byte offset (inclusive) within the assembled bitstream")
+                Long sampleByteOffsetStart,
+        @Schema(description = "End byte offset (exclusive) within the assembled bitstream")
+                Long sampleByteOffsetEnd,
+        @Schema(
+                        description =
+                                "hwTimestampNs of the first entropy event contributing to this"
+                                        + " sample (exact, not approximate)")
+                Instant sampleFirstEventTimestamp,
+        @Schema(
+                        description =
+                                "hwTimestampNs of the last entropy event contributing to this"
+                                        + " sample (exact, not approximate)")
+                Instant sampleLastEventTimestamp,
+        @Schema(
+                        description =
+                                "NIST_SINGLE_SAMPLE: individual NIST-valid 90B assessment."
+                                        + " PRODUCT_WINDOW_SUMMARY: product-defined conservative"
+                                        + " summary across N independent NIST assessments (not"
+                                        + " NIST-specified).")
+                String assessmentScope,
+        @Schema(
+                        description =
+                                "Whether the actual sample size meets the NIST SP 800-90B §3.1.2"
+                                    + " minimum recommendation of 1,000,000 bytes. Null for legacy"
+                                    + " or summary rows.")
+                Boolean sampleSizeMeetsNistMinimum) {
     /**
      * Converts entity to DTO.
      */

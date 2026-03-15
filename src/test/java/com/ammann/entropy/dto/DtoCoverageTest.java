@@ -57,13 +57,13 @@ class DtoCoverageTest {
 
         NISTSuiteResultDTO passed =
                 new NISTSuiteResultDTO(List.of(), 1, 1, 0, 1.0, true, Instant.now(), 100L, window);
-        assertThat(passed.allTestsPassed()).isTrue();
+        assertThat(passed.suitePassed()).isTrue();
         assertThat(passed.getRecommendation()).contains("meets NIST SP 800-22");
 
         NISTSuiteResultDTO minor =
                 new NISTSuiteResultDTO(
                         List.of(), 10, 9, 1, 0.9, false, Instant.now(), 100L, window);
-        assertThat(minor.allTestsPassed()).isFalse();
+        assertThat(minor.suitePassed()).isFalse();
         assertThat(minor.getRecommendation()).contains("Minor randomness issues");
 
         NISTSuiteResultDTO critical =

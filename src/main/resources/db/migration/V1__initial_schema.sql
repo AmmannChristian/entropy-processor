@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS nist_test_results (
     details           JSONB,                            -- Additional test-specific output (e.g., sub-test statistics).
     chunk_index       INTEGER,                          -- Which chunk within a run produced this result (0-based).
     chunk_count       INTEGER,                          -- Total number of chunks in this test suite run.
+    aggregation_method VARCHAR(30) DEFAULT 'SINGLE_SEQUENCE', -- SINGLE_SEQUENCE or MULTI_SEQUENCE_CHI2 (SP 800-22 §4.2.1).
 
     PRIMARY KEY (id, executed_at)
 );
@@ -124,6 +125,14 @@ CREATE TABLE IF NOT EXISTS nist_90b_results (
     chunk_index           INTEGER,                       -- Which chunk within a run produced this result (0-based).
     chunk_count           INTEGER,                       -- Total number of chunks in this assessment run.
     is_run_summary        BOOLEAN          NOT NULL DEFAULT FALSE, -- TRUE marks the single canonical result for a completed run; FALSE marks per-chunk forensic rows.
+    sample_index          INTEGER,                       -- 1-based index of this sample within the window assessment.
+    sample_count          INTEGER,                       -- Total number of samples in this window assessment.
+    sample_byte_offset_start BIGINT,                     -- Start byte offset (inclusive) within the assembled bitstream.
+    sample_byte_offset_end   BIGINT,                     -- End byte offset (exclusive) within the assembled bitstream.
+    sample_first_event_timestamp TIMESTAMPTZ,             -- hwTimestampNs of the first entropy event contributing to this sample.
+    sample_last_event_timestamp  TIMESTAMPTZ,             -- hwTimestampNs of the last entropy event contributing to this sample.
+    assessment_scope      VARCHAR(30) DEFAULT 'NIST_SINGLE_SAMPLE', -- NIST_SINGLE_SAMPLE or PRODUCT_WINDOW_SUMMARY.
+    sample_size_meets_nist_minimum BOOLEAN,               -- Whether sample size meets SP 800-90B §3.1.2 minimum (1,000,000 bytes).
 
     PRIMARY KEY (id, executed_at)
 );
@@ -143,7 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_90b_assessment_run_chunk ON nist_90b_results(asse
 -- are unconstrained. The absence of a summary row for a given
 -- assessment_run_id indicates an incomplete or failed run.
 CREATE UNIQUE INDEX uq_nist_90b_run_summary
-    ON nist_90b_results (assessment_run_id)
+    ON nist_90b_results (assessment_run_id, executed_at)
     WHERE is_run_summary = TRUE;
 
 
