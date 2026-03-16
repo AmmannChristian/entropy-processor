@@ -259,8 +259,8 @@ CREATE TABLE IF NOT EXISTS nist_validation_jobs (
     test_suite_run_id   UUID,                             -- Links to nist_test_results.test_suite_run_id (SP 800-22).
     assessment_run_id   UUID,                             -- Links to nist_90b_results.assessment_run_id (SP 800-90B).
     created_at          TIMESTAMPTZ      NOT NULL DEFAULT NOW(), -- Job creation timestamp.
-    started_at          TIMESTAMPTZ,                      -- When processing started (status → RUNNING).
-    completed_at        TIMESTAMPTZ,                      -- When processing finished (status → COMPLETED/FAILED).
+    started_at          TIMESTAMPTZ,                      -- When processing started (status -> RUNNING).
+    completed_at        TIMESTAMPTZ,                      -- When processing finished (status -> COMPLETED/FAILED).
     error_message       TEXT,                             -- Error details if status = FAILED.
     created_by          VARCHAR(255),                     -- Username of user who triggered the validation.
 

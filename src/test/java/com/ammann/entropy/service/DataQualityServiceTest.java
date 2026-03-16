@@ -315,49 +315,6 @@ class DataQualityServiceTest {
         assertThat(gaps.get(0).startSequence()).isEqualTo(2L);
     }
 
-    // detectMissingSequences (deprecated method): branch coverage.
-    @Test
-    void detectMissingSequences_nullOrSingleEvent_returnsEmpty() {
-        Instant now = Instant.now();
-        assertThat(service.detectMissingSequences(null)).isEmpty();
-        assertThat(service.detectMissingSequences(List.of(event(1, 1_000_000L, now)))).isEmpty();
-    }
-
-    @Test
-    void detectMissingSequences_normalGap_returnsMissingSequences() {
-        Instant now = Instant.now();
-        List<EntropyData> events =
-                List.of(event(1, 1_000_000L, now), event(5, 5_000_000L, now.plusMillis(10)));
-
-        List<Long> missing = service.detectMissingSequences(events);
-        assertThat(missing).containsExactlyInAnyOrder(2L, 3L, 4L);
-    }
-
-    @Test
-    void detectMissingSequences_contiguousEvents_returnsEmpty() {
-        Instant now = Instant.now();
-        List<EntropyData> events =
-                List.of(
-                        event(1, 1_000_000L, now),
-                        event(2, 2_000_000L, now.plusMillis(5)),
-                        event(3, 3_000_000L, now.plusMillis(10)));
-
-        assertThat(service.detectMissingSequences(events)).isEmpty();
-    }
-
-    @Test
-    void detectMissingSequences_gapTooLarge_throwsIllegalStateException() {
-        Instant now = Instant.now();
-        List<EntropyData> events =
-                List.of(
-                        event(1, 1_000_000L, now),
-                        event(200_003, 2_000_000L, now.plusMillis(10)) // gap > 100_000
-                        );
-
-        assertThatThrownBy(() -> service.detectMissingSequences(events))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Gap too large");
-    }
 
     // checkClockDrift: sortedEvents below ten after filtering and too-short time span.
     @Test

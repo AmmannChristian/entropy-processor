@@ -39,8 +39,8 @@ public class DataQualityService {
      * Expected detector count rate in Hz. Configurable via application.properties.
      * The expected interval and acceptable range are derived from this value.
      */
-    @ConfigProperty(name = "entropy.source.expected-rate-hz", defaultValue = "184.0")
-    double expectedRateHz = DEFAULT_EXPECTED_RATE_HZ;
+    @ConfigProperty(name = "entropy.source.expected-rate-hz", defaultValue = DataQualityService.DEFAULT_EXPECTED_RATE_HZ + "")
+    double expectedRateHz;
 
     /**
      * Returns the expected inter-event interval in milliseconds, derived from
@@ -213,42 +213,6 @@ public class DataQualityService {
             return "unknown-source";
         }
         return sourceId;
-    }
-
-    /**
-     * @deprecated Use {@link #detectSequenceGaps(List)} instead to avoid OOM on large gaps.
-     * This method is kept for backward compatibility but will throw if gaps are too large.
-     */
-    @Deprecated(since = "1.0", forRemoval = true)
-    public List<Long> detectMissingSequences(List<EntropyData> events) {
-        if (events == null || events.size() < 2) {
-            return List.of();
-        }
-
-        List<Long> missing = new ArrayList<>();
-        long maxEnumerable = 100_000; // Safety limit
-
-        for (int i = 1; i < events.size(); i++) {
-            long prevSeq = events.get(i - 1).sequenceNumber;
-            long currentSeq = events.get(i).sequenceNumber;
-            long gapSize = currentSeq - prevSeq - 1;
-
-            if (gapSize > maxEnumerable) {
-                throw new IllegalStateException(
-                        "Gap too large to enumerate ("
-                                + gapSize
-                                + " sequences). Use detectSequenceGaps() instead for"
-                                + " memory-efficient gap detection.");
-            }
-
-            if (gapSize > 0) {
-                for (long seq = prevSeq + 1; seq < currentSeq; seq++) {
-                    missing.add(seq);
-                }
-            }
-        }
-
-        return missing;
     }
 
     /**

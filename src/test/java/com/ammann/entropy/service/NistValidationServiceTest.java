@@ -312,7 +312,7 @@ class NistValidationServiceTest {
         Instant end = Instant.now();
 
         // MULTI_SEQUENCE_CHI2: 2 sequences × 15 tests = 30 DB rows.
-        // getValidationResultByRunId aggregates per test name via chi-square → 15 results.
+        // getValidationResultByRunId aggregates per test name via chi-square -> 15 results.
         // All p-values are well-spread (0.3, 0.7) so chi-square uniformity passes for all.
         String[] testNames = {
             "frequency_monobit", "block_frequency", "runs", "longest_run",
@@ -341,7 +341,7 @@ class NistValidationServiceTest {
         // 30 DB rows aggregated to 15 distinct test names
         assertThat(dto.totalTests()).isEqualTo(15);
         assertThat(dto.validationMode()).isEqualTo("MULTI_SEQUENCE_CHI2");
-        // p-values 0.3 and 0.7 are in different bins → reasonable uniformity → all pass
+        // p-values 0.3 and 0.7 are in different bins -> reasonable uniformity -> all pass
         assertThat(dto.tests()).allMatch(test -> test.passed());
         assertThat(dto.passedTests()).isEqualTo(15);
         assertThat(dto.failedTests()).isEqualTo(0);
@@ -891,7 +891,7 @@ class NistValidationServiceTest {
     @Test
     void compute90BSamplePositions_singleSampleWhenWindowShorterThanTwoIntervals() {
         service.setSp80090bSampleIntervalSecondsForTesting(3600);
-        // 1.5 MB data, 1 MB sample size, 1-hour window → sampleCount = floor(3600/3600) = 1
+        // 1.5 MB data, 1 MB sample size, 1-hour window -> sampleCount = floor(3600/3600) = 1
         List<int[]> positions = service.compute90BSamplePositions(1_500_000, 1_000_000, 3600);
         assertThat(positions).hasSize(1);
         assertThat(positions.get(0)).containsExactly(0, 1_000_000);
@@ -900,7 +900,7 @@ class NistValidationServiceTest {
     @Test
     void compute90BSamplePositions_twoSamplesForTwoHourWindow() {
         service.setSp80090bSampleIntervalSecondsForTesting(3600);
-        // 5 MB data, 1 MB sample size, 2-hour window → time-based = floor(7200/3600) = 2,
+        // 5 MB data, 1 MB sample size, 2-hour window -> time-based = floor(7200/3600) = 2,
         // data-based = 5
         List<int[]> positions = service.compute90BSamplePositions(5_000_000, 1_000_000, 7200);
         assertThat(positions).hasSize(2);
@@ -922,7 +922,7 @@ class NistValidationServiceTest {
     @Test
     void compute90BSamplePositions_24HourWindowDistributes24Samples() {
         service.setSp80090bSampleIntervalSecondsForTesting(3600);
-        // 50 MB data, 1 MB sample, 24-hour window → time-based = 24, data-based = 50
+        // 50 MB data, 1 MB sample, 24-hour window -> time-based = 24, data-based = 50
         List<int[]> positions = service.compute90BSamplePositions(50_000_000, 1_000_000, 86400);
         assertThat(positions).hasSize(24);
         // Each sample is exactly 1 MB
@@ -934,7 +934,7 @@ class NistValidationServiceTest {
     @Test
     void compute90BSamplePositions_zeroWindowDurationReturnsSingleSample() {
         service.setSp80090bSampleIntervalSecondsForTesting(3600);
-        // All events at same timestamp → windowDuration = 0 → sampleCount = max(1, 0) = 1
+        // All events at same timestamp -> windowDuration = 0 -> sampleCount = max(1, 0) = 1
         List<int[]> positions = service.compute90BSamplePositions(5_000_000, 1_000_000, 0);
         assertThat(positions).hasSize(1);
         assertThat(positions.get(0)).containsExactly(0, 1_000_000);
@@ -951,7 +951,7 @@ class NistValidationServiceTest {
     @Test
     void compute90BSamplePositions_cappedByDataNotTime() {
         service.setSp80090bSampleIntervalSecondsForTesting(3600);
-        // 3 MB data, 1 MB sample, 10-hour window → time-based = 10, data-based = 3 → capped at 3
+        // 3 MB data, 1 MB sample, 10-hour window -> time-based = 10, data-based = 3 -> capped at 3
         List<int[]> positions = service.compute90BSamplePositions(3_000_000, 1_000_000, 36000);
         assertThat(positions).hasSize(3);
     }
