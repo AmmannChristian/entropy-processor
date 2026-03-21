@@ -668,7 +668,8 @@ public class NistValidationService {
         }
     }
 
-    private void persistNistTestResultsBatch(List<NistTestResult> entitiesToPersist) {
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void persistNistTestResultsBatch(List<NistTestResult> entitiesToPersist) {
         for (NistTestResult entity : entitiesToPersist) {
             em.persist(entity);
         }
@@ -1036,7 +1037,6 @@ public class NistValidationService {
                         end);
 
         entity.assessmentRunId = assessmentRunId;
-        em.persist(entity);
 
         return new Sp80090bOutcome(entity, entropyResult);
     }
@@ -1053,7 +1053,8 @@ public class NistValidationService {
      * @param response         gRPC response from the worst-minEntropy chunk
      * @param sourceChunkIndex 0-based index of the chunk whose response is used (for traceability)
      */
-    private void writeEstimatorsForRun(
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void writeEstimatorsForRun(
             UUID assessmentRunId, Sp80090bAssessmentResponse response, int sourceChunkIndex) {
         LOG.debugf(
                 "Writing estimators for run %s from source chunk %d",
@@ -1376,16 +1377,16 @@ public class NistValidationService {
 
     private void runSp80022WorkerWithExtendedTimeout(UUID jobId, String bearerToken) {
         LOG.infof("Starting worker thread for SP 800-22 job %s", jobId);
+        // Outer TX provides Hibernate session for reads on async thread.
+        // No timeout — all writes use REQUIRES_NEW and are independent.
         QuarkusTransaction.requiringNew()
-                .timeout(1800)
-                .run(() -> transactionalSelf().processSp80022ValidationJob(jobId, bearerToken));
+                .run(() -> processSp80022ValidationJob(jobId, bearerToken));
     }
 
     private void runSp80090bWorkerWithExtendedTimeout(UUID jobId, String bearerToken) {
         LOG.infof("Starting worker thread for SP 800-90B job %s", jobId);
         QuarkusTransaction.requiringNew()
-                .timeout(1800)
-                .run(() -> transactionalSelf().processSp80090bValidationJob(jobId, bearerToken));
+                .run(() -> processSp80090bValidationJob(jobId, bearerToken));
     }
 
     @Transactional(Transactional.TxType.REQUIRES_NEW)
@@ -1415,21 +1416,22 @@ public class NistValidationService {
      * @param jobId       Job ID to process
      * @param bearerToken Bearer token for gRPC calls
      */
-    @Transactional
     public void processSp80022ValidationJob(UUID jobId, String bearerToken) {
         NistValidationJob job = NistValidationJob.findById(jobId);
         if (job == null) {
-            LOG.errorf("SP 800-22 job %s not found", jobId);
+            LOG.errorf("SP 800-22 job %s not found — skipping", jobId);
             return;
         }
 
-        try {
-            job.status = JobStatus.RUNNING;
-            job.startedAt = Instant.now();
-            job.persist();
-            LOG.infof("SP 800-22 job %s started", jobId);
+        transactionalSelf().markJobRunning(jobId);
+        LOG.infof("SP 800-22 job %s started", jobId);
 
-            List<EntropyData> events = EntropyData.findInTimeWindow(job.windowStart, job.windowEnd);
+        try {
+
+            Instant windowStart = job.windowStart;
+            Instant windowEnd = job.windowEnd;
+
+            List<EntropyData> events = EntropyData.findInTimeWindow(windowStart, windowEnd);
             if (events.isEmpty()) {
                 throw new NistException("No entropy data in specified window");
             }
@@ -1447,15 +1449,13 @@ public class NistValidationService {
 
             int maxBytes = getEffectiveSp80022MaxBytes();
             UUID testSuiteRunId = UUID.randomUUID();
-            job.testSuiteRunId = testSuiteRunId;
             String batchId = events.getFirst().batchId;
 
             boolean singleSequence = bitstream.length <= maxBytes;
 
             if (singleSequence) {
                 // Single-sequence mode
-                job.totalChunks = 1;
-                job.persist();
+                transactionalSelf().updateJobMetadata(jobId, testSuiteRunId, 1);
 
                 LOG.infof(
                         "SP 800-22 job %s: single-sequence mode, bytes=%d bits=%d",
@@ -1471,8 +1471,8 @@ public class NistValidationService {
                                     test.getName(),
                                     test.getPassed(),
                                     test.getPValue(),
-                                    job.windowStart,
-                                    job.windowEnd);
+                                    windowStart,
+                                    windowEnd);
                     entity.dataSampleSize = bitstreamLengthBits;
                     entity.bitsTested = bitstreamLengthBits;
                     entity.batchId = batchId;
@@ -1486,10 +1486,8 @@ public class NistValidationService {
                     entitiesToPersist.add(entity);
                 }
 
-                persistNistTestResultsBatch(entitiesToPersist);
-                job.currentChunk = 1;
-                job.progressPercent = 100;
-                job.persist();
+                transactionalSelf().persistNistTestResultsBatch(entitiesToPersist);
+                transactionalSelf().updateJobProgress(jobId, 1, 100);
             } else {
                 // Multi-sequence mode
                 int minBytesPerSequence = (int) Math.ceil(getEffectiveSp80022MinBits() / 8.0);
@@ -1512,15 +1510,12 @@ public class NistValidationService {
                         Math.max(minSequences, (bitstream.length + maxBytes - 1) / maxBytes);
                 int sequenceLength = bitstream.length / sequenceCount;
 
-                job.totalChunks = sequenceCount;
-                job.persist();
+                transactionalSelf().updateJobMetadata(jobId, testSuiteRunId, sequenceCount);
 
                 LOG.infof(
                         "SP 800-22 job %s: multi-sequence mode, bytes=%d sequences=%d"
                                 + " seqLength=%d",
                         jobId, bitstream.length, sequenceCount, sequenceLength);
-
-                List<NistTestResult> entitiesToPersist = new ArrayList<>();
 
                 // Truncate to exact multiple of sequenceLength (§4.2.1)
                 int usableLen = sequenceCount * sequenceLength;
@@ -1534,6 +1529,7 @@ public class NistValidationService {
 
                     Sp80022TestResponse grpcResult = runSp80022Tests(sequence, bearerToken);
 
+                    List<NistTestResult> sequenceResults = new ArrayList<>();
                     for (Sp80022TestResult test : grpcResult.getResultsList()) {
                         NistTestResult entity =
                                 new NistTestResult(
@@ -1541,8 +1537,8 @@ public class NistValidationService {
                                         test.getName(),
                                         test.getPassed(),
                                         test.getPValue(),
-                                        job.windowStart,
-                                        job.windowEnd);
+                                        windowStart,
+                                        windowEnd);
                         entity.dataSampleSize = seqBits;
                         entity.bitsTested = seqBits;
                         entity.batchId = batchId;
@@ -1553,42 +1549,32 @@ public class NistValidationService {
                                 test.hasWarning()
                                         ? ensureJsonDocument(test.getWarning(), "warning")
                                         : null;
-                        entitiesToPersist.add(entity);
+                        sequenceResults.add(entity);
                     }
 
-                    transactionalSelf().updateJobProgress(
-                            jobId,
-                            i + 1,
-                            (int) ((i + 1) * 100.0 / sequenceCount)
-                    );
+                    transactionalSelf().persistNistTestResultsBatch(sequenceResults);
+
+                    int progressPercent = (int) ((i + 1) * 100.0 / sequenceCount);
+                    transactionalSelf().updateJobProgress(jobId, i + 1, progressPercent);
 
                     LOG.infof(
                             "SP 800-22 job %s: sequence %d/%d complete (%d%%)",
-                            jobId, i + 1, sequenceCount, job.progressPercent);
+                            jobId, i + 1, sequenceCount, progressPercent);
                 }
-
-                persistNistTestResultsBatch(entitiesToPersist);
             }
 
-            job.status = JobStatus.COMPLETED;
-            job.completedAt = Instant.now();
-            job.progressPercent = 100;
-            job.persist();
+            transactionalSelf().markJobCompleted(jobId);
 
             LOG.infof(
-                    "SP 800-22 job %s completed successfully: runId=%s mode=%s duration=%ds",
+                    "SP 800-22 job %s completed successfully: runId=%s mode=%s",
                     jobId,
                     testSuiteRunId,
-                    singleSequence ? "SINGLE_SEQUENCE" : "MULTI_SEQUENCE_CHI2",
-                    Duration.between(job.startedAt, job.completedAt).getSeconds());
+                    singleSequence ? "SINGLE_SEQUENCE" : "MULTI_SEQUENCE_CHI2");
 
         } catch (Exception e) {
             LOG.errorf(e, "SP 800-22 job %s failed", jobId);
             String errorMessage =
                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            job.status = JobStatus.FAILED;
-            job.errorMessage = errorMessage;
-            job.completedAt = Instant.now();
             try {
                 transactionalSelf().markJobFailed(jobId, errorMessage);
             } catch (Exception markFailedException) {
@@ -1612,21 +1598,22 @@ public class NistValidationService {
      * @param jobId       job identifier to process
      * @param bearerToken bearer token for gRPC authentication (may be null)
      */
-    @Transactional
     public void processSp80090bValidationJob(UUID jobId, String bearerToken) {
         NistValidationJob job = NistValidationJob.findById(jobId);
         if (job == null) {
-            LOG.errorf("SP 800-90B job %s not found", jobId);
+            LOG.errorf("SP 800-90B job %s not found — skipping", jobId);
             return;
         }
 
-        try {
-            job.status = JobStatus.RUNNING;
-            job.startedAt = Instant.now();
-            job.persist();
-            LOG.infof("SP 800-90B job %s started", jobId);
+        transactionalSelf().markJobRunning(jobId);
+        LOG.infof("SP 800-90B job %s started", jobId);
 
-            List<EntropyData> events = EntropyData.findInTimeWindow(job.windowStart, job.windowEnd);
+        try {
+
+            Instant windowStart = job.windowStart;
+            Instant windowEnd = job.windowEnd;
+
+            List<EntropyData> events = EntropyData.findInTimeWindow(windowStart, windowEnd);
             if (events.isEmpty()) {
                 throw new NistException("No entropy data in specified window");
             }
@@ -1638,21 +1625,17 @@ public class NistValidationService {
 
             int maxBytes = getEffectiveSp80090bMaxBytes();
             long windowDurationSeconds =
-                    computeWindowDurationSeconds(events, job.windowStart, job.windowEnd);
+                    computeWindowDurationSeconds(events, windowStart, windowEnd);
             List<int[]> samplePositions =
                     compute90BSamplePositions(bitstream.length, maxBytes, windowDurationSeconds);
             int sampleCount = samplePositions.size();
 
-            job.totalChunks = sampleCount;
-            job.persist();
+            UUID assessmentRunId = UUID.randomUUID();
+            transactionalSelf().updateJob90BMetadata(jobId, assessmentRunId, sampleCount);
 
             LOG.infof(
                     "SP 800-90B job %s: totalBytes=%d samples=%d sampleSize=%d windowDuration=%ds",
                     jobId, bitstream.length, sampleCount, maxBytes, windowDurationSeconds);
-
-            UUID assessmentRunId = UUID.randomUUID();
-            job.assessmentRunId = assessmentRunId;
-            job.persist();
 
             String batchId = events.getFirst().batchId;
             int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
@@ -1683,8 +1666,8 @@ public class NistValidationService {
                         assess90B(
                                 sample,
                                 batchId,
-                                job.windowStart,
-                                job.windowEnd,
+                                windowStart,
+                                windowEnd,
                                 bearerToken,
                                 assessmentRunId);
 
@@ -1699,7 +1682,7 @@ public class NistValidationService {
                 long actualSampleBytes = sampleEnd - sampleStart;
                 entity.sampleSizeMeetsNistMinimum =
                         actualSampleBytes >= getEffectiveSp80090bMaxBytes();
-                em.persist(entity);
+                transactionalSelf().persist90BResult(entity);
 
                 if (outcome.response().getMinEntropy() < worstMinEntropy) {
                     worstMinEntropy = outcome.response().getMinEntropy();
@@ -1710,15 +1693,12 @@ public class NistValidationService {
                 allPassed &= outcome.response().getPassed();
                 totalBits += entity.bitsTested != null ? entity.bitsTested : 0L;
 
-                transactionalSelf().updateJobProgress(
-                        jobId,
-                        i + 1,
-                        (int) ((i + 1) * 100.0 / sampleCount)
-                );
+                int progressPercent = (int) ((i + 1) * 100.0 / sampleCount);
+                transactionalSelf().updateJobProgress(jobId, i + 1, progressPercent);
 
                 LOG.infof(
                         "SP 800-90B job %s: sample %d/%d complete (%d%%) minEntropy=%.6f",
-                        jobId, i + 1, sampleCount, job.progressPercent, entity.minEntropy);
+                        jobId, i + 1, sampleCount, progressPercent, entity.minEntropy);
             }
 
             // Run-summary row: product-defined conservative aggregation
@@ -1747,35 +1727,26 @@ public class NistValidationService {
                             allPassed,
                             summaryDetails,
                             totalBits,
-                            job.windowStart,
-                            job.windowEnd);
+                            windowStart,
+                            windowEnd);
             summary.assessmentRunId = assessmentRunId;
             summary.sampleCount = sampleCount;
             summary.isRunSummary = true;
             summary.assessmentScope = "PRODUCT_WINDOW_SUMMARY";
-            em.persist(summary);
+            transactionalSelf().persist90BResult(summary);
 
-            writeEstimatorsForRun(assessmentRunId, worstResponse, worstSampleIndex);
+            transactionalSelf().writeEstimatorsForRun(assessmentRunId, worstResponse, worstSampleIndex);
 
-            job.status = JobStatus.COMPLETED;
-            job.completedAt = Instant.now();
-            job.progressPercent = 100;
-            job.persist();
+            transactionalSelf().markJobCompleted(jobId);
 
             LOG.infof(
-                    "SP 800-90B job %s completed successfully: runId=%s samples=%d duration=%ds",
-                    jobId,
-                    assessmentRunId,
-                    sampleCount,
-                    Duration.between(job.startedAt, job.completedAt).getSeconds());
+                    "SP 800-90B job %s completed successfully: runId=%s samples=%d",
+                    jobId, assessmentRunId, sampleCount);
 
         } catch (Exception e) {
             LOG.errorf(e, "SP 800-90B job %s failed", jobId);
             String errorMessage =
                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            job.status = JobStatus.FAILED;
-            job.errorMessage = errorMessage;
-            job.completedAt = Instant.now();
             try {
                 transactionalSelf().markJobFailed(jobId, errorMessage);
             } catch (Exception markFailedException) {
@@ -2021,5 +1992,52 @@ public class NistValidationService {
             job.progressPercent = progressPercent;
             job.persist();
         }
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void markJobRunning(UUID jobId) {
+        NistValidationJob job = NistValidationJob.findById(jobId);
+        if (job != null) {
+            job.status = JobStatus.RUNNING;
+            job.startedAt = Instant.now();
+            job.persist();
+        }
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void markJobCompleted(UUID jobId) {
+        NistValidationJob job = NistValidationJob.findById(jobId);
+        if (job != null) {
+            job.status = JobStatus.COMPLETED;
+            job.completedAt = Instant.now();
+            job.progressPercent = 100;
+            job.persist();
+        }
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void updateJobMetadata(UUID jobId, UUID testSuiteRunId, int totalChunks) {
+        NistValidationJob job = NistValidationJob.findById(jobId);
+        if (job != null) {
+            job.testSuiteRunId = testSuiteRunId;
+            job.totalChunks = totalChunks;
+            job.persist();
+        }
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void updateJob90BMetadata(UUID jobId, UUID assessmentRunId, int totalChunks) {
+        NistValidationJob job = NistValidationJob.findById(jobId);
+        if (job != null) {
+            job.assessmentRunId = assessmentRunId;
+            job.totalChunks = totalChunks;
+            job.persist();
+        }
+    }
+
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void persist90BResult(Nist90BResult entity) {
+        em.persist(entity);
+        em.flush();
     }
 }

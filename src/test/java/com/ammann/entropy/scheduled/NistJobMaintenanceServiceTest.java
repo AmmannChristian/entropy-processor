@@ -23,7 +23,7 @@ class NistJobMaintenanceServiceTest {
     void detectStuckJobsMarksOnlyOldRunningJobsAsFailed() {
         NistValidationJob.deleteAll();
 
-        NistValidationJob stuck = persistJob(JobStatus.RUNNING, Instant.now().minusSeconds(3600));
+        NistValidationJob stuck = persistJob(JobStatus.RUNNING, Instant.now().minusSeconds(5500));
         NistValidationJob fresh = persistJob(JobStatus.RUNNING, Instant.now().minusSeconds(300));
         NistValidationJob queued = persistJob(JobStatus.QUEUED, null);
 
@@ -49,7 +49,7 @@ class NistJobMaintenanceServiceTest {
         NistValidationJob.deleteAll();
 
         NistValidationJob oldQueued =
-                persistJob(JobStatus.QUEUED, null, Instant.now().minusSeconds(3600));
+                persistJob(JobStatus.QUEUED, null, Instant.now().minusSeconds(5500));
         NistValidationJob freshQueued = persistJob(JobStatus.QUEUED, null);
 
         service.detectStuckJobs();
@@ -80,6 +80,36 @@ class NistJobMaintenanceServiceTest {
         assertThat(NistValidationJob.count("status", JobStatus.FAILED)).isZero();
         assertThat(NistValidationJob.count("status", JobStatus.RUNNING)).isEqualTo(1);
         assertThat(NistValidationJob.count("status", JobStatus.QUEUED)).isEqualTo(1);
+    }
+
+    @Test
+    @TestTransaction
+    void detectStuckJobsDoesNotMarkJobAt89Min59sAsFailed() {
+        NistValidationJob.deleteAll();
+
+        // 5399 seconds = 89 min 59 s — just under 90 min threshold, must NOT be stuck
+        persistJob(JobStatus.RUNNING, Instant.now().minusSeconds(5399));
+
+        service.detectStuckJobs();
+        NistValidationJob.getEntityManager().clear();
+
+        assertThat(NistValidationJob.count("status", JobStatus.FAILED)).isZero();
+        assertThat(NistValidationJob.count("status", JobStatus.RUNNING)).isEqualTo(1);
+    }
+
+    @Test
+    @TestTransaction
+    void detectStuckJobsMarksJobAt90Min01sAsFailed() {
+        NistValidationJob.deleteAll();
+
+        // 5401 seconds = 90 min 1 s — just over 90 min threshold, MUST be stuck
+        persistJob(JobStatus.RUNNING, Instant.now().minusSeconds(5401));
+
+        service.detectStuckJobs();
+        NistValidationJob.getEntityManager().clear();
+
+        assertThat(NistValidationJob.count("status", JobStatus.FAILED)).isEqualTo(1);
+        assertThat(NistValidationJob.count("status", JobStatus.RUNNING)).isZero();
     }
 
     @Test

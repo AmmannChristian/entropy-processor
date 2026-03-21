@@ -165,10 +165,8 @@ class NistValidationServiceAsyncTest {
                                             .id;
                                 });
 
-        // Committed TX so updateJobProgress(REQUIRES_NEW) can see the job row
-        QuarkusTransaction.requiringNew()
-                .timeout(60)
-                .run(() -> service.processSp80022ValidationJob(jobId, "token-123"));
+        // No outer TX needed — all DB ops inside use REQUIRES_NEW
+        service.processSp80022ValidationJob(jobId, "token-123");
 
         QuarkusTransaction.requiringNew()
                 .run(
@@ -206,19 +204,33 @@ class NistValidationServiceAsyncTest {
     }
 
     @Test
-    @TestTransaction
     void processSp80022ValidationJobMarksFailedWhenNoEntropyDataExists() {
-        clearAll();
         Instant end = Instant.now();
         Instant start = end.minusSeconds(300);
-        NistValidationJob job = persistJob(ValidationType.SP_800_22, JobStatus.QUEUED, start, end);
 
-        service.processSp80022ValidationJob(job.id, null);
+        UUID jobId =
+                QuarkusTransaction.requiringNew()
+                        .call(
+                                () -> {
+                                    clearAll();
+                                    return persistJob(
+                                                    ValidationType.SP_800_22,
+                                                    JobStatus.QUEUED,
+                                                    start,
+                                                    end)
+                                            .id;
+                                });
 
-        NistValidationJob reloaded = NistValidationJob.findById(job.id);
-        assertThat(reloaded.status).isEqualTo(JobStatus.FAILED);
-        assertThat(reloaded.errorMessage).contains("No entropy data");
-        assertThat(reloaded.completedAt).isNotNull();
+        service.processSp80022ValidationJob(jobId, null);
+
+        QuarkusTransaction.requiringNew()
+                .run(
+                        () -> {
+                            NistValidationJob reloaded = NistValidationJob.findById(jobId);
+                            assertThat(reloaded.status).isEqualTo(JobStatus.FAILED);
+                            assertThat(reloaded.errorMessage).contains("No entropy data");
+                            assertThat(reloaded.completedAt).isNotNull();
+                        });
     }
 
     @Test
@@ -254,10 +266,8 @@ class NistValidationServiceAsyncTest {
                                             .id;
                                 });
 
-        // Committed TX so updateJobProgress(REQUIRES_NEW) can see the job row
-        QuarkusTransaction.requiringNew()
-                .timeout(60)
-                .run(() -> service.processSp80090bValidationJob(jobId, "token-xyz"));
+        // No outer TX needed — all DB ops inside use REQUIRES_NEW
+        service.processSp80090bValidationJob(jobId, "token-xyz");
 
         QuarkusTransaction.requiringNew()
                 .run(
@@ -305,19 +315,33 @@ class NistValidationServiceAsyncTest {
     }
 
     @Test
-    @TestTransaction
     void processSp80090bValidationJobMarksFailedWhenNoEntropyDataExists() {
-        clearAll();
         Instant end = Instant.now();
         Instant start = end.minusSeconds(300);
-        NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
 
-        service.processSp80090bValidationJob(job.id, null);
+        UUID jobId =
+                QuarkusTransaction.requiringNew()
+                        .call(
+                                () -> {
+                                    clearAll();
+                                    return persistJob(
+                                                    ValidationType.SP_800_90B,
+                                                    JobStatus.QUEUED,
+                                                    start,
+                                                    end)
+                                            .id;
+                                });
 
-        NistValidationJob reloaded = NistValidationJob.findById(job.id);
-        assertThat(reloaded.status).isEqualTo(JobStatus.FAILED);
-        assertThat(reloaded.errorMessage).contains("No entropy data");
-        assertThat(reloaded.completedAt).isNotNull();
+        service.processSp80090bValidationJob(jobId, null);
+
+        QuarkusTransaction.requiringNew()
+                .run(
+                        () -> {
+                            NistValidationJob reloaded = NistValidationJob.findById(jobId);
+                            assertThat(reloaded.status).isEqualTo(JobStatus.FAILED);
+                            assertThat(reloaded.errorMessage).contains("No entropy data");
+                            assertThat(reloaded.completedAt).isNotNull();
+                        });
     }
 
     @Test
@@ -575,44 +599,57 @@ class NistValidationServiceAsyncTest {
     // -------------------------------------------------------------------------
 
     @Test
-    @TestTransaction
     void singleChunkRun_summaryEqualsChunkMetrics() {
-        clearAll();
         service.setSp80090bOverride(sp80090bSuccess()); // minEntropy=7.5, passed=true
         service.setSp80090bMaxBytesForTesting(1_000_000); // no chunking
 
         Instant end = Instant.now();
         Instant start = end.minusSeconds(300);
-        seedEntropyEvents("summary-single", start, 10);
 
-        NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
-        service.processSp80090bValidationJob(job.id, null);
+        UUID jobId =
+                QuarkusTransaction.requiringNew()
+                        .call(
+                                () -> {
+                                    clearAll();
+                                    seedEntropyEvents("summary-single", start, 10);
+                                    return persistJob(
+                                                    ValidationType.SP_800_90B,
+                                                    JobStatus.QUEUED,
+                                                    start,
+                                                    end)
+                                            .id;
+                                });
 
-        NistValidationJob reloaded = NistValidationJob.findById(job.id);
-        assertThat(reloaded.status).isEqualTo(JobStatus.COMPLETED);
-        assertThat(reloaded.totalChunks).isEqualTo(1);
+        service.processSp80090bValidationJob(jobId, null);
 
-        Nist90BResult summary =
-                Nist90BResult.find(
-                                "assessmentRunId = ?1 AND isRunSummary = true",
-                                reloaded.assessmentRunId)
-                        .firstResult();
-        assertThat(summary).isNotNull();
-        assertThat(summary.minEntropy).isEqualTo(7.5);
-        assertThat(summary.passed).isTrue();
-        // Summary row records sample count via sampleCount (not chunkCount)
-        assertThat(summary.sampleCount).isEqualTo(1);
+        QuarkusTransaction.requiringNew()
+                .run(
+                        () -> {
+                            NistValidationJob reloaded = NistValidationJob.findById(jobId);
+                            assertThat(reloaded.status).isEqualTo(JobStatus.COMPLETED);
+                            assertThat(reloaded.totalChunks).isEqualTo(1);
 
-        // Estimators written from sample index 0 (0-based worst sample index)
-        assertThat(Nist90BEstimatorResult.count("assessmentRunId", reloaded.assessmentRunId))
-                .isEqualTo(4L); // 2 NonIID + 2 IID in sp80090bSuccess()
-        assertThat(summary.assessmentDetails).contains("estimatorSourceSample");
+                            Nist90BResult summary =
+                                    Nist90BResult.find(
+                                                    "assessmentRunId = ?1 AND isRunSummary = true",
+                                                    reloaded.assessmentRunId)
+                                            .firstResult();
+                            assertThat(summary).isNotNull();
+                            assertThat(summary.minEntropy).isEqualTo(7.5);
+                            assertThat(summary.passed).isTrue();
+                            assertThat(summary.sampleCount).isEqualTo(1);
+
+                            assertThat(
+                                            Nist90BEstimatorResult.count(
+                                                    "assessmentRunId", reloaded.assessmentRunId))
+                                    .isEqualTo(4L);
+                            assertThat(summary.assessmentDetails)
+                                    .contains("estimatorSourceSample");
+                        });
     }
 
     @Test
-    @TestTransaction
     void multiChunkAllPass_summaryMinEntropyIsGlobalMin() {
-        clearAll();
         // Fixed response: minEntropy=7.5, passed=true for all chunks
         service.setSp80090bOverride(sp80090bSuccess());
         service.setSp80090bMaxBytesForTesting(100); // force multiple chunks
@@ -621,32 +658,46 @@ class NistValidationServiceAsyncTest {
 
         Instant end = Instant.now();
         Instant start = end.minusSeconds(300);
-        seedEntropyEvents("summary-multi", start, 10);
 
-        NistValidationJob job = persistJob(ValidationType.SP_800_90B, JobStatus.QUEUED, start, end);
-        service.processSp80090bValidationJob(job.id, null);
+        UUID jobId =
+                QuarkusTransaction.requiringNew()
+                        .call(
+                                () -> {
+                                    clearAll();
+                                    seedEntropyEvents("summary-multi", start, 10);
+                                    return persistJob(
+                                                    ValidationType.SP_800_90B,
+                                                    JobStatus.QUEUED,
+                                                    start,
+                                                    end)
+                                            .id;
+                                });
 
-        NistValidationJob reloaded = NistValidationJob.findById(job.id);
-        assertThat(reloaded.status).isEqualTo(JobStatus.COMPLETED);
-        assertThat(reloaded.totalChunks).isGreaterThanOrEqualTo(2);
+        service.processSp80090bValidationJob(jobId, null);
 
-        Nist90BResult summary =
-                Nist90BResult.find(
-                                "assessmentRunId = ?1 AND isRunSummary = true",
-                                reloaded.assessmentRunId)
-                        .firstResult();
-        assertThat(summary).isNotNull();
-        assertThat(summary.passed).isTrue();
-        assertThat(summary.minEntropy).isEqualTo(7.5); // min of identical samples
-        // Summary row records sample count via sampleCount (not chunkCount)
-        assertThat(summary.sampleCount).isEqualTo(reloaded.totalChunks);
+        QuarkusTransaction.requiringNew()
+                .run(
+                        () -> {
+                            NistValidationJob reloaded = NistValidationJob.findById(jobId);
+                            assertThat(reloaded.status).isEqualTo(JobStatus.COMPLETED);
+                            assertThat(reloaded.totalChunks).isGreaterThanOrEqualTo(2);
 
-        // Exactly one summary row
-        assertThat(
-                        Nist90BResult.count(
-                                "assessmentRunId = ?1 AND isRunSummary = true",
-                                reloaded.assessmentRunId))
-                .isEqualTo(1L);
+                            Nist90BResult summary =
+                                    Nist90BResult.find(
+                                                    "assessmentRunId = ?1 AND isRunSummary = true",
+                                                    reloaded.assessmentRunId)
+                                            .firstResult();
+                            assertThat(summary).isNotNull();
+                            assertThat(summary.passed).isTrue();
+                            assertThat(summary.minEntropy).isEqualTo(7.5);
+                            assertThat(summary.sampleCount).isEqualTo(reloaded.totalChunks);
+
+                            assertThat(
+                                            Nist90BResult.count(
+                                                    "assessmentRunId = ?1 AND isRunSummary = true",
+                                                    reloaded.assessmentRunId))
+                                    .isEqualTo(1L);
+                        });
     }
 
     @Test

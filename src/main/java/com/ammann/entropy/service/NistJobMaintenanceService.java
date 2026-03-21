@@ -16,7 +16,7 @@ import org.jboss.logging.Logger;
  * <p>
  * Provides two critical functions:
  * <ol>
- *   <li><b>Watchdog:</b> Detects and fails stuck RUNNING jobs that exceed maximum runtime (30 minutes)</li>
+ *   <li><b>Watchdog:</b> Detects and fails stuck RUNNING jobs that exceed maximum runtime (90 minutes)</li>
  *   <li><b>Cleanup:</b> Deletes old COMPLETED/FAILED jobs to prevent table bloat (7-day retention)</li>
  * </ol>
  * <p>
@@ -29,7 +29,7 @@ public class NistJobMaintenanceService {
     private static final Logger LOG = Logger.getLogger(NistJobMaintenanceService.class);
 
     /** Maximum allowed runtime for a NIST validation job before it's considered stuck */
-    private static final Duration MAX_JOB_RUNTIME = Duration.ofMinutes(30);
+    private static final Duration MAX_JOB_RUNTIME = Duration.ofMinutes(90);
 
     /** Maximum time a job may remain QUEUED before dispatch is considered failed */
     private static final Duration MAX_QUEUE_WAIT = Duration.ofMinutes(30);
@@ -41,8 +41,8 @@ public class NistJobMaintenanceService {
      * Watchdog: detects and fails stuck jobs.
      * <p>
      * Runs every 10 minutes to check for RUNNING jobs that have been executing for more than
-     * 30 minutes. Such jobs are marked as FAILED because normal NIST validations complete
-     * within a few minutes (typical: 2-5 minutes for moderate-sized bitstreams).
+     * 90 minutes. Such jobs are marked as FAILED because even multi-sequence NIST validations
+     * (55 sequences) typically complete within 40 minutes.
      * <p>
      * Stuck jobs can occur from:
      * <ul>
@@ -61,7 +61,7 @@ public class NistJobMaintenanceService {
         long markedRunning =
                 NistValidationJob.update(
                         "status = 'FAILED', "
-                                + "errorMessage = 'Job exceeded maximum runtime (30 minutes)', "
+                                + "errorMessage = 'Job exceeded maximum runtime (90 minutes)', "
                                 + "completedAt = ?1 "
                                 + "WHERE status = 'RUNNING' AND startedAt < ?2",
                         now,
