@@ -341,3 +341,33 @@ CREATE TABLE entropy_comparison_result (
 SELECT create_hypertable('entropy_comparison_result', 'created_at');
 CREATE INDEX idx_comparison_result_run    ON entropy_comparison_result(comparison_run_id);
 CREATE INDEX idx_comparison_result_source ON entropy_comparison_result(source_type);
+
+ALTER TABLE entropy_data SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'channel',
+    timescaledb.compress_orderby = 'server_received DESC, hw_timestamp_ns DESC'
+);
+SELECT add_compression_policy('entropy_data', INTERVAL '2 days');
+
+ALTER TABLE nist_test_results SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'test_suite_run_id',
+    timescaledb.compress_orderby = 'executed_at DESC'
+);
+SELECT add_compression_policy('nist_test_results', INTERVAL '14 days');
+
+ALTER TABLE nist_90b_results SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'assessment_run_id',
+    timescaledb.compress_orderby = 'executed_at DESC'
+);
+SELECT add_compression_policy('nist_90b_results', INTERVAL '14 days');
+
+ALTER TABLE entropy_comparison_result SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'source_type',
+    timescaledb.compress_orderby = 'created_at DESC'
+);
+SELECT add_compression_policy('entropy_comparison_result', INTERVAL '14 days');
+
+SELECT add_retention_policy('entropy_data', INTERVAL '90 days');
