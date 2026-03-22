@@ -1,3 +1,9 @@
+[![CI](https://github.com/AmmannChristian/entropy-processor/actions/workflows/ci.yml/badge.svg)](https://github.com/AmmannChristian/entropy-processor/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/AmmannChristian/entropy-processor/graph/badge.svg)](https://app.codecov.io/gh/AmmannChristian/entropy-processor)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AmmannChristian/entropy-processor/blob/main/LICENSE)
+![Quarkus](https://img.shields.io/badge/Quarkus-3.31.2-blue?logo=quarkus)
+![Java](https://img.shields.io/badge/Java-21-blue?logo=openjdk)
+
 # Entropy Processor
 
 `entropy-processor` is a Quarkus-based backend service (`Java 21`) that receives entropy events from edge gateways over gRPC, persists them in TimescaleDB/PostgreSQL, exposes analysis and operations APIs over REST, and orchestrates external NIST SP 800-22 and SP 800-90B validation services.
