@@ -62,6 +62,7 @@ public class NistValidationService {
     private static final int DEFAULT_SP80022_MAX_BYTES = 12_500_000;
     private static final long DEFAULT_SP80022_MIN_BITS = 1_000_000L;
     private static final int DEFAULT_SP80090B_MAX_BYTES = 1_000_000;
+    private static final Duration NIST_GRPC_TIMEOUT = Duration.ofMinutes(45);
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final Metadata.Key<String> AUTHORIZATION_KEY =
             Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -647,7 +648,7 @@ public class NistValidationService {
 
         try {
             if (clientOverride != null) {
-                return clientOverride.runTestSuite(request).await().atMost(Duration.ofMinutes(10));
+                return clientOverride.runTestSuite(request).await().atMost(NIST_GRPC_TIMEOUT);
             }
 
             var client = sp80022Client;
@@ -655,7 +656,7 @@ public class NistValidationService {
             if (token != null) {
                 client = withBearerToken(client, token);
             }
-            return client.runTestSuite(request).await().atMost(Duration.ofMinutes(10));
+            return client.runTestSuite(request).await().atMost(NIST_GRPC_TIMEOUT);
 
         } catch (StatusRuntimeException e) {
             if (e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
@@ -1004,7 +1005,7 @@ public class NistValidationService {
                         sp80090bOverride
                                 .assessEntropy(request)
                                 .await()
-                                .atMost(Duration.ofMinutes(10));
+                                .atMost(NIST_GRPC_TIMEOUT);
             } else {
                 var client = sp80090bClient;
                 String token = resolveToken(bearerToken, "NIST SP 800-90B");
@@ -1012,7 +1013,7 @@ public class NistValidationService {
                     client = withBearerToken(client, token);
                 }
                 entropyResult =
-                        client.assessEntropy(request).await().atMost(Duration.ofMinutes(10));
+                        client.assessEntropy(request).await().atMost(NIST_GRPC_TIMEOUT);
             }
         } catch (StatusRuntimeException e) {
             if (e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
