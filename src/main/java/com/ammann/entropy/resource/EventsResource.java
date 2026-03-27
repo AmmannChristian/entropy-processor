@@ -516,4 +516,39 @@ public class EventsResource {
     }
 
     private record TimeWindow(Instant start, Instant end) {}
+
+    @GET
+    @Path(ApiProperties.Events.FILTER_OPTIONS)
+    @Operation(
+            summary = "Get Event Filter Options",
+            description =
+                    "Returns distinct values for event filters (batch IDs, channels) to populate"
+                            + " filter dropdowns in the UI")
+    @APIResponses({
+        @APIResponse(
+                responseCode = "200",
+                description = "Filter options retrieved successfully",
+                content =
+                        @Content(schema = @Schema(implementation = EventFilterOptionsDTO.class)))
+    })
+    public Response getFilterOptions() {
+        List<String> batchIds =
+                EntropyData.getEntityManager()
+                        .createQuery(
+                                "SELECT DISTINCT e.batchId FROM EntropyData e"
+                                        + " WHERE e.batchId IS NOT NULL ORDER BY e.batchId",
+                                String.class)
+                        .setMaxResults(200)
+                        .getResultList();
+
+        List<Integer> channels =
+                EntropyData.getEntityManager()
+                        .createQuery(
+                                "SELECT DISTINCT e.channel FROM EntropyData e"
+                                        + " WHERE e.channel IS NOT NULL ORDER BY e.channel",
+                                Integer.class)
+                        .getResultList();
+
+        return Response.ok(new EventFilterOptionsDTO(batchIds, channels)).build();
+    }
 }

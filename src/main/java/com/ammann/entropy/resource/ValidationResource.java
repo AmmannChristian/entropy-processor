@@ -222,6 +222,85 @@ public class ValidationResource {
     }
 
     @GET
+    @Path("/jobs/filter-options")
+    @Operation(
+            summary = "Get Validation Filter Options",
+            description =
+                    "Returns distinct values for validation filters (creators, test names, run IDs)"
+                            + " to populate filter dropdowns in the UI")
+    @APIResponses({
+        @APIResponse(
+                responseCode = "200",
+                description = "Filter options retrieved successfully",
+                content =
+                        @Content(
+                                schema =
+                                        @Schema(
+                                                implementation =
+                                                        ValidationJobFilterOptionsDTO.class)))
+    })
+    public Response getJobFilterOptions() {
+        List<String> createdByValues =
+                NistValidationJob.getEntityManager()
+                        .createQuery(
+                                "SELECT DISTINCT j.createdBy FROM NistValidationJob j"
+                                        + " WHERE j.createdBy IS NOT NULL ORDER BY j.createdBy",
+                                String.class)
+                        .getResultList();
+
+        List<String> testNames =
+                NistTestResult.getEntityManager()
+                        .createQuery(
+                                "SELECT DISTINCT r.testName FROM NistTestResult r"
+                                        + " WHERE r.testName IS NOT NULL ORDER BY r.testName",
+                                String.class)
+                        .getResultList();
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> testSuiteRows =
+                NistTestResult.getEntityManager()
+                        .createQuery(
+                                "SELECT r.testSuiteRunId, MIN(r.executedAt)"
+                                        + " FROM NistTestResult r"
+                                        + " WHERE r.testSuiteRunId IS NOT NULL"
+                                        + " GROUP BY r.testSuiteRunId"
+                                        + " ORDER BY MIN(r.executedAt) DESC")
+                        .setMaxResults(100)
+                        .getResultList();
+        List<ValidationJobFilterOptionsDTO.RunIdOption> testSuiteRunIds =
+                testSuiteRows.stream()
+                        .map(
+                                r ->
+                                        new ValidationJobFilterOptionsDTO.RunIdOption(
+                                                (UUID) r[0], (java.time.Instant) r[1]))
+                        .toList();
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> assessmentRows =
+                Nist90BResult.getEntityManager()
+                        .createQuery(
+                                "SELECT r.assessmentRunId, MIN(r.executedAt)"
+                                        + " FROM Nist90BResult r"
+                                        + " WHERE r.assessmentRunId IS NOT NULL"
+                                        + " GROUP BY r.assessmentRunId"
+                                        + " ORDER BY MIN(r.executedAt) DESC")
+                        .setMaxResults(100)
+                        .getResultList();
+        List<ValidationJobFilterOptionsDTO.RunIdOption> assessmentRunIds =
+                assessmentRows.stream()
+                        .map(
+                                r ->
+                                        new ValidationJobFilterOptionsDTO.RunIdOption(
+                                                (UUID) r[0], (java.time.Instant) r[1]))
+                        .toList();
+
+        return Response.ok(
+                        new ValidationJobFilterOptionsDTO(
+                                createdByValues, testNames, testSuiteRunIds, assessmentRunIds))
+                .build();
+    }
+
+    @GET
     @Path("/90b-results/{assessmentRunId}/estimators")
     @Operation(
             summary = "Get NIST SP 800-90B Estimator Results",

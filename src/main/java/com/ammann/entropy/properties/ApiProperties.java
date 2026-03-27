@@ -52,6 +52,7 @@ public final class ApiProperties {
         public static final String QUALITY = BASE + "/quality";
         public static final String RATE = BASE + "/rate";
         public static final String INTERVAL_HISTOGRAM = BASE + "/interval-histogram";
+        public static final String FILTER_OPTIONS = BASE + "/filter-options";
     }
 
     /**
