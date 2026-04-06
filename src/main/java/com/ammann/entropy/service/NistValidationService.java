@@ -1387,6 +1387,7 @@ public class NistValidationService {
     private void runSp80090bWorkerWithExtendedTimeout(UUID jobId, String bearerToken) {
         LOG.infof("Starting worker thread for SP 800-90B job %s", jobId);
         QuarkusTransaction.requiringNew()
+                .timeout(3600)
                 .run(() -> processSp80090bValidationJob(jobId, bearerToken));
     }
 
