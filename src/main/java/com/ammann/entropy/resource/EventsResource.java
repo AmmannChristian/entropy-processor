@@ -568,15 +568,28 @@ public class EventsResource {
      * across the observed interval range, snapped to a 1/2/5 × 10^k mantissa so bucket edges
      * are human-readable. Floors at {@link #AUTO_HISTOGRAM_MIN_BUCKET_NS} so fine-grained
      * entropy sources do not collapse into a single bucket.
+     *
+     * <p>Uses the {@link #AUTO_HISTOGRAM_UPPER_QUANTILE} quantile instead of the raw maximum
+     * so a single outlier (e.g. MQTT reconnect gap, container restart) cannot blow up the
+     * bucket size and collapse the bulk of the distribution into a single bar.
      */
     static int autoBucketSizeNs(List<Long> intervals) {
-        long min = Long.MAX_VALUE;
-        long max = Long.MIN_VALUE;
-        for (long v : intervals) {
-            if (v < min) min = v;
-            if (v > max) max = v;
+        if (intervals.isEmpty()) {
+            return AUTO_HISTOGRAM_MIN_BUCKET_NS;
         }
-        long range = Math.max(1L, max - min);
+
+        long[] sorted = new long[intervals.size()];
+        for (int i = 0; i < intervals.size(); i++) {
+            sorted[i] = intervals.get(i);
+        }
+        java.util.Arrays.sort(sorted);
+
+        long min = sorted[0];
+        int upperIdx = (int) Math.min(
+                sorted.length - 1L,
+                Math.round((sorted.length - 1) * AUTO_HISTOGRAM_UPPER_QUANTILE));
+        long upper = sorted[upperIdx];
+        long range = Math.max(1L, upper - min);
         double ideal = (double) range / AUTO_HISTOGRAM_TARGET_BUCKETS;
         if (ideal < AUTO_HISTOGRAM_MIN_BUCKET_NS) {
             return AUTO_HISTOGRAM_MIN_BUCKET_NS;
@@ -603,4 +616,5 @@ public class EventsResource {
 
     private static final int AUTO_HISTOGRAM_TARGET_BUCKETS = 64;
     private static final int AUTO_HISTOGRAM_MIN_BUCKET_NS = 100;
+    private static final double AUTO_HISTOGRAM_UPPER_QUANTILE = 0.99;
 }

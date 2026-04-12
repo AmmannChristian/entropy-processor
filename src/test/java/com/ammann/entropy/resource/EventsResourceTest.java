@@ -359,12 +359,27 @@ class EventsResourceTest {
 
     @Test
     void autoBucketSizeNsSnapsToNiceValues() {
+        // Two-sample input: quantile resolves to the max, so range == max - min.
         // Range 6_400_000 ns → ideal ~100_000 → snaps to 100_000
         assertThat(EventsResource.autoBucketSizeNs(List.of(0L, 6_400_000L))).isEqualTo(100_000);
         // Range 12_800 ns → ideal 200 → snaps to 200
         assertThat(EventsResource.autoBucketSizeNs(List.of(0L, 12_800L))).isEqualTo(200);
         // Tiny range clamps to minimum bucket (100 ns)
         assertThat(EventsResource.autoBucketSizeNs(List.of(0L, 10L))).isEqualTo(100);
+    }
+
+    @Test
+    void autoBucketSizeNsIgnoresSingleOutlier() {
+        // 500 samples uniformly in [0, 6_400_000] plus one 2-second outlier.
+        // A raw-max sizer would pick ~31 ms buckets (2e9 / 64) and collapse all
+        // real data into a single bin. The quantile-based sizer should ignore
+        // the outlier and return ~100_000 ns, matching the bulk of the data.
+        java.util.List<Long> samples = new java.util.ArrayList<>(501);
+        for (int i = 0; i < 500; i++) {
+            samples.add((long) (i * 12_800L));
+        }
+        samples.add(2_000_000_000L); // 2 seconds — far above the 99th percentile
+        assertThat(EventsResource.autoBucketSizeNs(samples)).isLessThanOrEqualTo(200_000);
     }
 
     @Test
