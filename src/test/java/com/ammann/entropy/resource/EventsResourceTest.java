@@ -331,8 +331,40 @@ class EventsResourceTest {
                         start.toString(), start.plusSeconds(10).toString(), 100);
         IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
 
-        // Verify default bucket size is used when not specified
+        // Verify explicit bucket size is honored when passed.
         assertThat(dto.bucketSizeNs()).isEqualTo(100);
+    }
+
+    @Test
+    @TestTransaction
+    void getIntervalHistogramAutoSizesWhenBucketSizeIsMinusOne() {
+        EntropyData.deleteAll();
+        EventsResource resource = buildResource();
+
+        // TestDataFactory builds events with a fixed 1500 ns stride, so all intervals
+        // collapse to a single value (range=0). The auto-sizer must degrade gracefully
+        // and return the minimum floor of 100 ns rather than throwing or returning 0.
+        Instant start = Instant.parse("2024-01-01T00:00:00Z");
+        List<EntropyData> events = TestDataFactory.buildSequentialEvents(150, 1_000L, start);
+        EntropyData.persist(events);
+
+        var response =
+                resource.getIntervalHistogram(
+                        start.toString(), start.plusSeconds(10).toString(), -1);
+        IntervalHistogramDTO dto = (IntervalHistogramDTO) response.getEntity();
+
+        assertThat(dto.bucketSizeNs()).isEqualTo(100);
+        assertThat(dto.totalIntervals()).isEqualTo(149L);
+    }
+
+    @Test
+    void autoBucketSizeNsSnapsToNiceValues() {
+        // Range 6_400_000 ns → ideal ~100_000 → snaps to 100_000
+        assertThat(EventsResource.autoBucketSizeNs(List.of(0L, 6_400_000L))).isEqualTo(100_000);
+        // Range 12_800 ns → ideal 200 → snaps to 200
+        assertThat(EventsResource.autoBucketSizeNs(List.of(0L, 12_800L))).isEqualTo(200);
+        // Tiny range clamps to minimum bucket (100 ns)
+        assertThat(EventsResource.autoBucketSizeNs(List.of(0L, 10L))).isEqualTo(100);
     }
 
     @Test

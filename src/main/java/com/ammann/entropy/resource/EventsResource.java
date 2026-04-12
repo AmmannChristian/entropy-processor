@@ -428,8 +428,9 @@ public class EventsResource {
             description =
                     "Returns a histogram of frequencies for intervals between decay events."
                         + " Requires at least 100 intervals for meaningful statistical analysis."
-                        + " Default bucket size (100ns) is optimized for radioactive decay"
-                        + " intervals in the 2-10µs range.")
+                        + " When bucketSizeNs is omitted (or set to -1) the server auto-selects"
+                        + " a bucket size that targets approximately 64 buckets across the"
+                        + " observed interval range, rounded to a 1/2/5 × 10^k value.")
     @APIResponses({
         @APIResponse(
                 responseCode = "200",
@@ -442,19 +443,21 @@ public class EventsResource {
             @Parameter(description = "Start of time window (ISO-8601)") @QueryParam("from")
                     String from,
             @Parameter(description = "End of time window (ISO-8601)") @QueryParam("to") String to,
-            @Parameter(description = "Bucket size in nanoseconds (must be positive, default: 100)")
+            @Parameter(
+                            description =
+                                    "Bucket size in nanoseconds. Pass -1 (or omit) for"
+                                            + " auto-sizing based on the observed interval range.")
                     @QueryParam("bucketSizeNs")
-                    @DefaultValue("100")
+                    @DefaultValue("-1")
                     int bucketSizeNs) {
 
         LOG.debugf(
                 "Interval histogram request: from=%s, to=%s, bucketSize=%d",
                 from, to, bucketSizeNs);
 
-        // Validate bucket size to prevent division by zero and negative values
-        if (bucketSizeNs <= 0) {
+        if (bucketSizeNs != -1 && bucketSizeNs <= 0) {
             throw ValidationException.invalidParameter(
-                    "bucketSizeNs", bucketSizeNs, "positive integer");
+                    "bucketSizeNs", bucketSizeNs, "positive integer or -1 for auto");
         }
 
         TimeWindow window = parseTimeWindow(from, to);
@@ -464,11 +467,19 @@ public class EventsResource {
             throw ValidationException.insufficientData("intervals", 100, intervals.size());
         }
 
+        int effectiveBucketSizeNs = bucketSizeNs;
+        if (effectiveBucketSizeNs == -1) {
+            effectiveBucketSizeNs = autoBucketSizeNs(intervals);
+            LOG.debugf(
+                    "Auto-selected bucketSizeNs=%d for %d intervals",
+                    effectiveBucketSizeNs, intervals.size());
+        }
+
         Map<Long, Integer> histogram =
-                entropyStatisticsService.createHistogram(intervals, bucketSizeNs);
+                entropyStatisticsService.createHistogram(intervals, effectiveBucketSizeNs);
         IntervalHistogramDTO response =
                 IntervalHistogramDTO.from(
-                        histogram, intervals, bucketSizeNs, window.start, window.end);
+                        histogram, intervals, effectiveBucketSizeNs, window.start, window.end);
 
         LOG.infof(
                 "Histogram: %d buckets from %d intervals (min=%dns, max=%dns)",
@@ -551,4 +562,45 @@ public class EventsResource {
 
         return Response.ok(new EventFilterOptionsDTO(batchIds, channels)).build();
     }
+
+    /**
+     * Picks a bucket size that yields roughly {@link #AUTO_HISTOGRAM_TARGET_BUCKETS} buckets
+     * across the observed interval range, snapped to a 1/2/5 × 10^k mantissa so bucket edges
+     * are human-readable. Floors at {@link #AUTO_HISTOGRAM_MIN_BUCKET_NS} so fine-grained
+     * entropy sources do not collapse into a single bucket.
+     */
+    static int autoBucketSizeNs(List<Long> intervals) {
+        long min = Long.MAX_VALUE;
+        long max = Long.MIN_VALUE;
+        for (long v : intervals) {
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        long range = Math.max(1L, max - min);
+        double ideal = (double) range / AUTO_HISTOGRAM_TARGET_BUCKETS;
+        if (ideal < AUTO_HISTOGRAM_MIN_BUCKET_NS) {
+            return AUTO_HISTOGRAM_MIN_BUCKET_NS;
+        }
+
+        // Snap ``ideal`` up to the next value in the 1/2/5 × 10^k series.
+        double exponent = Math.floor(Math.log10(ideal));
+        double pow = Math.pow(10.0, exponent);
+        double mantissa = ideal / pow;
+        double snapped;
+        if (mantissa <= 1.0) {
+            snapped = 1.0 * pow;
+        } else if (mantissa <= 2.0) {
+            snapped = 2.0 * pow;
+        } else if (mantissa <= 5.0) {
+            snapped = 5.0 * pow;
+        } else {
+            snapped = 10.0 * pow;
+        }
+
+        long bucket = Math.max(AUTO_HISTOGRAM_MIN_BUCKET_NS, (long) snapped);
+        return (int) Math.min(bucket, Integer.MAX_VALUE);
+    }
+
+    private static final int AUTO_HISTOGRAM_TARGET_BUCKETS = 64;
+    private static final int AUTO_HISTOGRAM_MIN_BUCKET_NS = 100;
 }
