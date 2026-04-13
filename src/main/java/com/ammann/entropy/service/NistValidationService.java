@@ -166,7 +166,7 @@ public class NistValidationService {
      * Uses async job pattern for consistent tracking and progress visibility.
      */
     @Scheduled(
-            cron = "{nist.sp80090b.weekly-cron}",
+            cron = "${nist.sp80090b.weekly-cron}",
             concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
     @Transactional
     public void runWeeklyNIST90BValidation() {
