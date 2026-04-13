@@ -277,6 +277,7 @@ class EntropyResourceTest {
 
         SecurityContext securityContext = mock(SecurityContext.class);
         when(securityContext.getUserPrincipal()).thenReturn(null);
+        when(securityContext.isUserInRole("NIST_ROLE")).thenReturn(true);
 
         var response =
                 resource.triggerNIST90BValidation(
@@ -294,6 +295,7 @@ class EntropyResourceTest {
 
         SecurityContext securityContext = mock(SecurityContext.class);
         when(securityContext.getUserPrincipal()).thenReturn(null);
+        when(securityContext.isUserInRole("NIST_ROLE")).thenReturn(true);
 
         var response =
                 resource.triggerNIST90BValidation(
