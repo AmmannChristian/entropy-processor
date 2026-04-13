@@ -372,6 +372,7 @@ public class EntropyResource {
                 responseCode = "400",
                 description = "Invalid parameters or concurrent job limit reached")
     })
+    @RolesAllowed({"SUPER_USER_ROLE", "SUPER_ADMIN_ROLE"})
     public Response triggerNIST90BValidation(
             @Parameter(description = "Start of validation window (ISO-8601)") @QueryParam("from")
                     String from,
@@ -380,14 +381,26 @@ public class EntropyResource {
             @HeaderParam("Authorization") String authHeader,
             @Context SecurityContext securityContext) {
 
-        LOG.infof("Manual NIST SP 800-90B validation triggered: from=%s, to=%s", from, to);
+        String username = resolveUsername(securityContext);
+
+        if (!securityContext.isUserInRole("NIST_ROLE")) {
+            LOG.warnf(
+                    "Manual NIST SP 800-90B trigger rejected: NIST_ROLE missing (user=%s)",
+                    username);
+            return Response.status(Response.Status.FORBIDDEN)
+                    .entity(
+                            new ErrorResponseDTO(
+                                    "NIST_ROLE required for manual SP 800-90B trigger",
+                                    "FORBIDDEN"))
+                    .build();
+        }
+
+        LOG.infof(
+                "Manual NIST SP 800-90B validation triggered: from=%s, to=%s, user=%s",
+                from, to, username);
 
         TimeWindow window = parseTimeWindow(from, to);
         String bearerToken = extractBearerToken(authHeader);
-        String username =
-                securityContext.getUserPrincipal() != null
-                        ? securityContext.getUserPrincipal().getName()
-                        : "anonymous";
 
         try {
             UUID jobId =
@@ -511,6 +524,20 @@ public class EntropyResource {
             return authHeader.substring(7).trim();
         }
         return null;
+    }
+
+    private String resolveUsername(SecurityContext securityContext) {
+        try {
+            if (securityContext != null && securityContext.getUserPrincipal() != null) {
+                String name = securityContext.getUserPrincipal().getName();
+                if (name != null && !name.isBlank()) {
+                    return name;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.debugf(e, "Failed to resolve username from SecurityContext");
+        }
+        return "anonymous";
     }
 
     /**
