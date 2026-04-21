@@ -774,8 +774,10 @@ public class NistValidationService {
                 "Validating NIST SP 800-90B window: %s to %s (token propagation: %b)",
                 start, end, bearerToken != null);
 
-        List<EntropyData> events = EntropyData.findInTimeWindow(start, end);
-        if (events.isEmpty()) {
+        // Memory-bounded path: count + per-sample slice loading instead of materialising the
+        // entire window (see processSp80090bValidationJob for rationale).
+        long eventCount = EntropyData.countInTimeWindow(start, end);
+        if (eventCount == 0) {
             LOG.warnf(
                     "Skipping NIST SP 800-90B: no entropy data found in window %s to %s",
                     start, end);
@@ -783,29 +785,43 @@ public class NistValidationService {
             throw new NistException("No entropy data in specified window");
         }
 
-        byte[] bitstream = extractWhitenedBits(events);
-        if (bitstream.length == 0) {
+        int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
+        long totalBytesLong = eventCount * (long) bytesPerEvent;
+        if (totalBytesLong == 0) {
             LOG.warnf(
                     "Skipping NIST SP 800-90B: extracted bitstream is empty in window %s to %s",
                     start, end);
             recordFailureMetric();
             throw new NistException("No usable entropy bitstream in specified window");
         }
+        if (totalBytesLong > Integer.MAX_VALUE) {
+            recordFailureMetric();
+            throw new NistException(
+                    String.format(
+                            "Window bitstream size %d bytes exceeds 2 GiB addressing limit;"
+                                    + " shorten the observation window",
+                            totalBytesLong));
+        }
+        int totalBytes = (int) totalBytesLong;
+
+        Object[] windowInfo = EntropyData.findWindowSummary(start, end);
+        Long firstHwNs = windowInfo[0] == null ? null : ((Number) windowInfo[0]).longValue();
+        Long lastHwNs = windowInfo[1] == null ? null : ((Number) windowInfo[1]).longValue();
+        String batchId = (String) windowInfo[2];
 
         int maxBytes = getEffectiveSp80090bMaxBytes();
-        long windowDurationSeconds = computeWindowDurationSeconds(events, start, end);
+        long windowDurationSeconds =
+                computeWindowDurationSeconds(firstHwNs, lastHwNs, start, end);
         List<int[]> samplePositions =
-                compute90BSamplePositions(bitstream.length, maxBytes, windowDurationSeconds);
+                compute90BSamplePositions(totalBytes, maxBytes, windowDurationSeconds);
         int sampleCount = samplePositions.size();
 
         LOG.infof(
-                "NIST SP 800-90B run window=%s..%s sourceBytes=%d sampleCount=%d sampleSize=%d"
-                        + " windowDuration=%ds",
-                start, end, bitstream.length, sampleCount, maxBytes, windowDurationSeconds);
+                "NIST SP 800-90B run window=%s..%s sourceBytes=%d events=%d sampleCount=%d"
+                        + " sampleSize=%d windowDuration=%ds",
+                start, end, totalBytes, eventCount, sampleCount, maxBytes, windowDurationSeconds);
 
-        String batchId = events.getFirst().batchId;
         UUID assessmentRunId = UUID.randomUUID();
-        int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
 
         double worstMinEntropy = Double.MAX_VALUE;
         Sp80090bAssessmentResponse worstResponse = null;
@@ -817,24 +833,20 @@ public class NistValidationService {
             int[] pos = samplePositions.get(i);
             int sampleStart = pos[0];
             int sampleEnd = pos[1];
-            byte[] sample = Arrays.copyOfRange(bitstream, sampleStart, sampleEnd);
 
-            // Resolve hwTimestampNs for first and last events contributing to this sample
-            int firstEventIndex = sampleStart / bytesPerEvent;
-            int lastEventIndex = Math.max(firstEventIndex, (sampleEnd - 1) / bytesPerEvent);
-            Instant firstEventTs = resolveEventTimestamp(events, firstEventIndex);
-            Instant lastEventTs = resolveEventTimestamp(events, lastEventIndex);
+            SampleSlice slice =
+                    loadWhitenedSampleSlice(start, end, sampleStart, sampleEnd, bytesPerEvent);
 
             Sp80090bOutcome outcome =
-                    assess90B(sample, batchId, start, end, bearerToken, assessmentRunId);
+                    assess90B(slice.bytes(), batchId, start, end, bearerToken, assessmentRunId);
 
             Nist90BResult entity = outcome.entity();
             entity.sampleIndex = i + 1;
             entity.sampleCount = sampleCount;
             entity.sampleByteOffsetStart = (long) sampleStart;
             entity.sampleByteOffsetEnd = (long) sampleEnd;
-            entity.sampleFirstEventTimestamp = firstEventTs;
-            entity.sampleLastEventTimestamp = lastEventTs;
+            entity.sampleFirstEventTimestamp = slice.firstEventTs();
+            entity.sampleLastEventTimestamp = slice.lastEventTs();
             entity.assessmentScope = "NIST_SINGLE_SAMPLE";
             long actualSampleBytes = sampleEnd - sampleStart;
             entity.sampleSizeMeetsNistMinimum = actualSampleBytes >= getEffectiveSp80090bMaxBytes();
@@ -919,36 +931,106 @@ public class NistValidationService {
     }
 
     /**
-     * Resolves the hwTimestampNs of the event at the given index, converted to an Instant.
+     * Computes the actual observation window duration in seconds from the min/max
+     * {@code hw_timestamp_ns} observed in the window. Falls back to the requested window bounds
+     * when hardware timestamps are missing or non-increasing.
      */
-    private Instant resolveEventTimestamp(List<EntropyData> events, int eventIndex) {
-        if (eventIndex < 0 || eventIndex >= events.size()) {
-            return null;
+    private long computeWindowDurationSeconds(
+            Long firstHwNs, Long lastHwNs, Instant start, Instant end) {
+        if (firstHwNs != null && lastHwNs != null && lastHwNs > firstHwNs) {
+            long hwSeconds = (lastHwNs - firstHwNs) / 1_000_000_000L;
+            if (hwSeconds > 0) {
+                return hwSeconds;
+            }
         }
-        Long hwNs = events.get(eventIndex).hwTimestampNs;
+        return Math.max(0, Duration.between(start, end).toSeconds());
+    }
+
+    /**
+     * Carrier for the bytes of a single NIST SP 800-90B sample plus the hardware timestamps
+     * of the chronologically first and last events contributing to it.
+     */
+    private record SampleSlice(byte[] bytes, Instant firstEventTs, Instant lastEventTs) {}
+
+    /**
+     * Loads only the whitened bytes required for a single NIST SP 800-90B sample and resolves
+     * the {@code hw_timestamp_ns} of the first and last contributing events.
+     *
+     * <p>The previous implementation materialised the entire time window into heap as a
+     * {@code List<EntropyData>} before slicing. For a 7-day window at the current event rate
+     * that is ~21 M entities ({@literal >} 5 GB heap) — far beyond a reasonable container
+     * budget, even though each sample only consumes 1 MB. This helper issues one projection
+     * query per sample, returning {@code (whitened_entropy, hw_timestamp_ns)} tuples for the
+     * minimal event range that covers the requested byte window.
+     *
+     * @param windowStart   job window start (inclusive)
+     * @param windowEnd     job window end (exclusive)
+     * @param sampleStart   byte offset (inclusive) within the hypothetical full bitstream
+     * @param sampleEnd     byte offset (exclusive) within the hypothetical full bitstream
+     * @param bytesPerEvent NIST-expected whitened bytes per event (32)
+     * @return the sample bytes and first/last event timestamps
+     */
+    private SampleSlice loadWhitenedSampleSlice(
+            Instant windowStart,
+            Instant windowEnd,
+            int sampleStart,
+            int sampleEnd,
+            int bytesPerEvent) {
+        int firstEventIndex = sampleStart / bytesPerEvent;
+        int lastEventIndex = Math.max(firstEventIndex, (sampleEnd - 1) / bytesPerEvent);
+        int limit = lastEventIndex - firstEventIndex + 1;
+
+        List<Object[]> rows =
+                EntropyData.findWhitenedSlice(windowStart, windowEnd, firstEventIndex, limit);
+        if (rows.isEmpty()) {
+            throw new NistException(
+                    String.format(
+                            "No entropy rows for sample slice [event %d, event %d) in window"
+                                    + " %s..%s",
+                            firstEventIndex, firstEventIndex + limit, windowStart, windowEnd));
+        }
+
+        byte[] sliceBuffer = new byte[rows.size() * bytesPerEvent];
+        int writePos = 0;
+        Long firstHw = null;
+        Long lastHw = null;
+        for (Object[] row : rows) {
+            byte[] whitened = (byte[]) row[0];
+            Long hwNs = row[1] == null ? null : ((Number) row[1]).longValue();
+            if (whitened == null || whitened.length != bytesPerEvent) {
+                throw new NistException(
+                        String.format(
+                                "Invalid whitened_entropy length=%d; expected %d bytes",
+                                whitened == null ? -1 : whitened.length, bytesPerEvent));
+            }
+            System.arraycopy(whitened, 0, sliceBuffer, writePos, bytesPerEvent);
+            writePos += bytesPerEvent;
+            if (firstHw == null) {
+                firstHw = hwNs;
+            }
+            lastHw = hwNs;
+        }
+
+        int sliceStartByteInGlobal = firstEventIndex * bytesPerEvent;
+        int offsetInSlice = sampleStart - sliceStartByteInGlobal;
+        int sampleLen = sampleEnd - sampleStart;
+        if (offsetInSlice < 0 || offsetInSlice + sampleLen > writePos) {
+            throw new NistException(
+                    String.format(
+                            "Sample range [%d,%d) does not fit in loaded slice"
+                                    + " (offsetInSlice=%d, bufferLen=%d)",
+                            sampleStart, sampleEnd, offsetInSlice, writePos));
+        }
+        byte[] sample = Arrays.copyOfRange(sliceBuffer, offsetInSlice, offsetInSlice + sampleLen);
+
+        return new SampleSlice(sample, hwNsToInstant(firstHw), hwNsToInstant(lastHw));
+    }
+
+    private static Instant hwNsToInstant(Long hwNs) {
         if (hwNs == null) {
             return null;
         }
         return Instant.ofEpochSecond(hwNs / 1_000_000_000L, hwNs % 1_000_000_000L);
-    }
-
-    /**
-     * Computes the actual observation window duration in seconds from event hardware timestamps.
-     * Falls back to the requested window bounds if events lack hardware timestamps.
-     */
-    private long computeWindowDurationSeconds(
-            List<EntropyData> events, Instant start, Instant end) {
-        if (events.size() >= 2) {
-            Long firstHw = events.getFirst().hwTimestampNs;
-            Long lastHw = events.getLast().hwTimestampNs;
-            if (firstHw != null && lastHw != null && lastHw > firstHw) {
-                long hwSeconds = (lastHw - firstHw) / 1_000_000_000L;
-                if (hwSeconds > 0) {
-                    return hwSeconds;
-                }
-            }
-        }
-        return Math.max(0, Duration.between(start, end).toSeconds());
     }
 
     /**
@@ -1615,32 +1697,47 @@ public class NistValidationService {
             Instant windowStart = job.windowStart;
             Instant windowEnd = job.windowEnd;
 
-            List<EntropyData> events = EntropyData.findInTimeWindow(windowStart, windowEnd);
-            if (events.isEmpty()) {
+            // Memory-bounded path: do not materialise the whole window into heap.
+            // With 7-day windows this would be ~21 M EntropyData entities (>5 GB heap)
+            // even though each sample only consumes 1 MB.
+            long eventCount = EntropyData.countInTimeWindow(windowStart, windowEnd);
+            if (eventCount == 0) {
                 throw new NistException("No entropy data in specified window");
             }
 
-            byte[] bitstream = extractWhitenedBits(events);
-            if (bitstream.length == 0) {
+            int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
+            long totalBytesLong = eventCount * (long) bytesPerEvent;
+            if (totalBytesLong == 0) {
                 throw new NistException("No usable entropy bitstream in specified window");
             }
+            if (totalBytesLong > Integer.MAX_VALUE) {
+                throw new NistException(
+                        String.format(
+                                "Window bitstream size %d bytes exceeds 2 GiB addressing limit;"
+                                        + " shorten the observation window",
+                                totalBytesLong));
+            }
+            int totalBytes = (int) totalBytesLong;
+
+            Object[] windowInfo = EntropyData.findWindowSummary(windowStart, windowEnd);
+            Long firstHwNs = windowInfo[0] == null ? null : ((Number) windowInfo[0]).longValue();
+            Long lastHwNs = windowInfo[1] == null ? null : ((Number) windowInfo[1]).longValue();
+            String batchId = (String) windowInfo[2];
 
             int maxBytes = getEffectiveSp80090bMaxBytes();
             long windowDurationSeconds =
-                    computeWindowDurationSeconds(events, windowStart, windowEnd);
+                    computeWindowDurationSeconds(firstHwNs, lastHwNs, windowStart, windowEnd);
             List<int[]> samplePositions =
-                    compute90BSamplePositions(bitstream.length, maxBytes, windowDurationSeconds);
+                    compute90BSamplePositions(totalBytes, maxBytes, windowDurationSeconds);
             int sampleCount = samplePositions.size();
 
             UUID assessmentRunId = UUID.randomUUID();
             transactionalSelf().updateJob90BMetadata(jobId, assessmentRunId, sampleCount);
 
             LOG.infof(
-                    "SP 800-90B job %s: totalBytes=%d samples=%d sampleSize=%d windowDuration=%ds",
-                    jobId, bitstream.length, sampleCount, maxBytes, windowDurationSeconds);
-
-            String batchId = events.getFirst().batchId;
-            int bytesPerEvent = GrpcMappingService.EXPECTED_WHITENED_ENTROPY_BYTES;
+                    "SP 800-90B job %s: totalBytes=%d events=%d samples=%d sampleSize=%d"
+                            + " windowDuration=%ds",
+                    jobId, totalBytes, eventCount, sampleCount, maxBytes, windowDurationSeconds);
 
             double worstMinEntropy = Double.MAX_VALUE;
             Sp80090bAssessmentResponse worstResponse = null;
@@ -1652,21 +1749,18 @@ public class NistValidationService {
                 int[] pos = samplePositions.get(i);
                 int sampleStart = pos[0];
                 int sampleEnd = pos[1];
-                byte[] sample = Arrays.copyOfRange(bitstream, sampleStart, sampleEnd);
 
-                // Resolve hwTimestampNs for first and last events contributing to this sample
-                int firstEventIndex = sampleStart / bytesPerEvent;
-                int lastEventIndex = Math.max(firstEventIndex, (sampleEnd - 1) / bytesPerEvent);
-                Instant firstEventTs = resolveEventTimestamp(events, firstEventIndex);
-                Instant lastEventTs = resolveEventTimestamp(events, lastEventIndex);
+                SampleSlice slice =
+                        loadWhitenedSampleSlice(
+                                windowStart, windowEnd, sampleStart, sampleEnd, bytesPerEvent);
 
                 LOG.infof(
                         "SP 800-90B job %s: processing sample %d/%d (%d bytes, range [%d,%d))",
-                        jobId, i + 1, sampleCount, sample.length, sampleStart, sampleEnd);
+                        jobId, i + 1, sampleCount, slice.bytes().length, sampleStart, sampleEnd);
 
                 Sp80090bOutcome outcome =
                         assess90B(
-                                sample,
+                                slice.bytes(),
                                 batchId,
                                 windowStart,
                                 windowEnd,
@@ -1678,8 +1772,8 @@ public class NistValidationService {
                 entity.sampleCount = sampleCount;
                 entity.sampleByteOffsetStart = (long) sampleStart;
                 entity.sampleByteOffsetEnd = (long) sampleEnd;
-                entity.sampleFirstEventTimestamp = firstEventTs;
-                entity.sampleLastEventTimestamp = lastEventTs;
+                entity.sampleFirstEventTimestamp = slice.firstEventTs();
+                entity.sampleLastEventTimestamp = slice.lastEventTs();
                 entity.assessmentScope = "NIST_SINGLE_SAMPLE";
                 long actualSampleBytes = sampleEnd - sampleStart;
                 entity.sampleSizeMeetsNistMinimum =

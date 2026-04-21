@@ -212,6 +212,73 @@ public class EntropyData extends PanacheEntity {
     }
 
     /**
+     * Counts events in the time window without materializing entities. Used by memory-bounded
+     * NIST SP 800-90B sampling to derive total bitstream length.
+     */
+    public static long countInTimeWindow(Instant start, Instant end) {
+        return count("serverReceived >= ?1 AND serverReceived < ?2", start, end);
+    }
+
+    /**
+     * Returns a 3-tuple summarising the time window without loading event bodies:
+     * {@code [min(hw_timestamp_ns), max(hw_timestamp_ns), first_batch_id]} where
+     * {@code first_batch_id} is the batch id of the chronologically first event.
+     * Any slot may be {@code null} if the window is empty.
+     */
+    public static Object[] findWindowSummary(Instant start, Instant end) {
+        return (Object[])
+                getEntityManager()
+                        .createNativeQuery(
+                                """
+                                SELECT
+                                  min(hw_timestamp_ns) AS min_hw,
+                                  max(hw_timestamp_ns) AS max_hw,
+                                  (SELECT batch_id
+                                     FROM entropy_data
+                                    WHERE server_received >= :start
+                                      AND server_received <  :end
+                                    ORDER BY hw_timestamp_ns
+                                    LIMIT 1)           AS first_batch_id
+                                FROM entropy_data
+                                WHERE server_received >= :start
+                                  AND server_received <  :end
+                                """)
+                        .setParameter("start", start)
+                        .setParameter("end", end)
+                        .getSingleResult();
+    }
+
+    /**
+     * Returns a contiguous projection slice of {@code [whitened_entropy, hw_timestamp_ns]}
+     * tuples for events in the window, ordered by {@code hw_timestamp_ns}, skipping
+     * {@code offsetEvents} rows and returning at most {@code limitEvents} rows.
+     *
+     * <p>This exists so NIST SP 800-90B sampling can load only the bytes needed for the
+     * current sample instead of materialising the entire window into heap.
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Object[]> findWhitenedSlice(
+            Instant start, Instant end, int offsetEvents, int limitEvents) {
+        return (List<Object[]>)
+                getEntityManager()
+                        .createNativeQuery(
+                                """
+                                SELECT whitened_entropy, hw_timestamp_ns
+                                FROM entropy_data
+                                WHERE server_received >= :start
+                                  AND server_received <  :end
+                                ORDER BY hw_timestamp_ns
+                                LIMIT  :lim
+                                OFFSET :off
+                                """)
+                        .setParameter("start", start)
+                        .setParameter("end", end)
+                        .setParameter("off", offsetEvents)
+                        .setParameter("lim", limitEvents)
+                        .getResultList();
+    }
+
+    /**
      * Calculates the interval to the previous event in nanoseconds.
      * Returns null if this is the first event.
      */
